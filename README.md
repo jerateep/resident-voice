@@ -6,18 +6,34 @@
 
 ### สำหรับลูกบ้าน (Residents)
 - 📝 **เสนอไอเดีย/แจ้งปัญหา:** พิมพ์ข้อความเสนอแนะ พร้อมระบุชื่อหรือบ้านเลขที่ได้
-- 👍 **ระบบโหวต (Voting):** โหวตสนับสนุนข้อเสนอที่เห็นด้วย (จำกัด 1 โหวตต่อ 1 คน/อุปกรณ์ สำหรับแต่ละหัวข้อ)
+- 👍 **ระบบโหวต (Voting):** โหวตสนับสนุนข้อเสนอที่เห็นด้วย (จำกัด 1 โหวตต่อ 1 คน/อุปกรณ์)
+- 🔍 **ค้นหา (Search):** ค้นหาข้อเสนอตามข้อความหรือชื่อผู้เสนอ
+- ⚠️ **แจ้งเตือนข้อเสนอซ้ำ:** ระบบจะแจ้งเตือนหากพบข้อเสนอที่คล้ายกับที่มีอยู่แล้ว
 - 📱 **ใช้งานง่าย (Responsive):** รองรับการใช้งานทั้งบนมือถือ แท็บเล็ต และคอมพิวเตอร์
 - 🔗 **แชร์ลิงก์ (Share):** คัดลอกลิงก์ของหมวดหมู่ปัจจุบันไปแชร์ในไลน์กลุ่มหมู่บ้านได้ทันที
 
 ### สำหรับผู้ดูแลระบบ (Admin)
-- 🔐 **ระบบป้องกัน (Admin PIN):** เข้าสู่โหมดผู้ดูแลระบบผ่านรหัสผ่าน (PIN) เพื่อป้องกันการเข้าถึงจากบุคคลทั่วไป
+- 🔐 **เข้าระบบด้วย Google:** ผู้ดูแลระบบยืนยันตัวตนผ่าน Google Account (UID ของ Admin ถูกจัดเก็บใน Firestore Collection `admins`)
 - 📁 **จัดการกระดาน (Multiple Boards):** สร้างกระดาน/หัวข้อการประชุมได้ไม่จำกัด (เช่น "ประชุมใหญ่สามัญ ปี 67")
 - 🎛️ **กำหนดสิทธิ์การโหวต:** ตั้งค่าจำนวนโหวตสูงสุดที่แต่ละการ์ดสามารถรับได้ (Max Votes)
 - 🚦 **เปิด/ปิด รับความเห็น:** สามารถเปิดหรือปิดรับข้อเสนอและการโหวตของแต่ละกระดานได้เมื่อหมดเวลา
 - 🗂️ **จัดหมวดหมู่ (Drag & Drop):** ลากการ์ดข้อเสนอไปใส่ในกลุ่มที่จัดเตรียมไว้ เช่น งานซ่อมบำรุง, ความปลอดภัย
-- 🔗 **รวมข้อเสนอที่ซ้ำกัน (Merge):** ลากการ์ดที่มีเนื้อหาเหมือนกันไปซ้อนทับกัน เพื่อรวมคะแนนโหวตและยุบรวมเป็นข้อเดียว
+- 🔗 **รวมข้อเสนอที่ซ้ำกัน (Merge):** ลากการ์ดที่มีเนื้อหาเหมือนกันไปซ้อนทับกัน เพื่อรวมคะแนนโหวต
 - 🖨️ **พิมพ์รายงาน (Print/Export):** แสดงผลตารางสรุปข้อเสนอทั้งหมด แบ่งตามหมวดหมู่ พร้อมคะแนนโหวต เพื่อนำไปปรินต์หรือเซฟเป็น PDF สำหรับใช้ในที่ประชุม
+- 📋 **บันทึกประวัติ (Audit Logs):** ระบบบันทึกทุกการกระทำของ Admin (ลบ, รวม, ย้ายการ์ด, เปิด/ปิดกระดาน) ไว้ใน Firestore Collection `auditLogs`
+
+---
+
+## 🔒 ความปลอดภัย (Security)
+
+| ฟีเจอร์ | รายละเอียด |
+|---|---|
+| **Admin Auth** | ใช้ Google Sign-In ผ่าน Firebase Auth, ตรวจสอบ UID กับ Firestore `admins` collection |
+| **Firestore Rules** | กฎระดับ Database ป้องกันไม่ให้ผู้ใช้ทั่วไปแก้ไข/ลบข้อมูล |
+| **Anti-XSS** | ทำความสะอาดข้อมูล Input ด้วย DOMPurify ก่อนบันทึกทุกครั้ง |
+| **Vote Fraud Prevention** | บันทึก Device Fingerprint (FingerprintJS) ในทุก Vote, จำกัด 1 โหวต/1 เครื่อง |
+| **Card Spam Prevention** | จำกัดจำนวนการ์ดที่ผู้ใช้แต่ละคน/เครื่องสามารถสร้างได้ |
+| **Duplicate Detection** | ตรวจจับข้อเสนอซ้ำด้วย Fuse.js (Fuzzy Search) |
 
 ---
 
@@ -26,7 +42,9 @@
 - **Frontend:** React, Vite, Tailwind CSS
 - **Icons:** Lucide React
 - **Backend/Database:** Firebase (Firestore)
-- **Authentication:** Firebase Anonymous Auth
+- **Authentication:** Firebase Auth (Anonymous + Google Sign-In)
+- **Security Libraries:** DOMPurify, FingerprintJS
+- **Duplicate Detection:** Fuse.js
 
 ---
 
@@ -35,19 +53,27 @@
 ### 1. การตั้งค่า Firebase (Prerequisites)
 ก่อนเริ่มรันโปรเจกต์ จำเป็นต้องมีโปรเจกต์บน Firebase:
 1. สร้างโปรเจกต์ใหม่ที่ [Firebase Console](https://console.firebase.google.com/)
-2. เปิดใช้งาน **Firestore Database** (ตั้งค่า Rules เบื้องต้นให้อนุญาตการอ่าน/เขียน สำหรับโหมด Development)
-3. เปิดใช้งาน **Authentication** และเปิดระบบ **Anonymous**
+2. เปิดใช้งาน **Firestore Database**
+3. เปิดใช้งาน **Authentication** และเปิดระบบ **Anonymous** และ **Google**
 4. ไปที่ Project Settings > General เพื่อสร้าง Web App และคัดลอกค่า Firebase Config
 
-### 2. การตั้งค่าโปรเจกต์ (Setup)
+### 2. ตั้งค่า Admin
+1. สร้าง Collection `admins` ใน Firestore
+2. เพิ่ม Document โดยใช้ UID ของ Google Account ที่ต้องการเป็น Admin เป็น Document ID
+3. เพิ่ม Field: `role: "admin"`
+
+### 3. Deploy Firestore Rules
+```bash
+firebase deploy --only firestore:rules
+```
+หรือ Copy เนื้อหาจาก `firestore.rules` ไปวางใน Firebase Console > Firestore > Rules
+
+### 4. การตั้งค่าโปรเจกต์ (Setup)
 1. โคลน (Clone) Repository นี้
 2. คัดลอกไฟล์ `.env.example` แล้วเปลี่ยนชื่อเป็น `.env`
-3. นำค่า Firebase Config และตั้งรหัสผ่าน Admin มาใส่ในไฟล์ `.env`
+3. นำค่า Firebase Config มาใส่ในไฟล์ `.env`
 
 ```env
-# ตั้งรหัสผ่านสำหรับเข้าโหมดผู้ดูแลระบบ (Admin PIN)
-VITE_ADMIN_PIN=123456
-
 # Firebase Configuration
 VITE_FIREBASE_API_KEY=your_api_key
 VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
@@ -55,9 +81,10 @@ VITE_FIREBASE_PROJECT_ID=your_project_id
 VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
 VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
 VITE_FIREBASE_APP_ID=your_app_id
+VITE_APP_ID=resident-idea-board-free
 ```
 
-### 3. รันโปรเจกต์บนเครื่อง (Development)
+### 5. รันโปรเจกต์บนเครื่อง (Development)
 
 ```bash
 # ติดตั้งแพ็กเกจ
@@ -81,6 +108,3 @@ npm run build
 ```
 
 โฟลเดอร์ `dist` จะถูกสร้างขึ้น สามารถนำโฟลเดอร์นี้ไปอัปโหลดขึ้น Web Hosting ได้เลย
-
-### คำเตือนเรื่องความปลอดภัย (Security Warning)
-สำหรับการนำไปใช้งานจริง (Production) **ต้องเขียน [Firestore Security Rules](https://firebase.google.com/docs/firestore/security/get-started)** เพื่อป้องกันไม่ให้ผู้ใช้ทั่วไป (ที่ไม่ใช่ Admin) สามารถแก้ไขหรือลบข้อมูลใน Database ได้โดยตรงผ่านการยิง API เนื่องจากฝั่ง Frontend มีการใช้ Anonymous Auth การเช็คสิทธิ์ `isAdmin` ในตรรกะของ React เพียงอย่างเดียวไม่เพียงพอต่อการป้องกัน Database.
