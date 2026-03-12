@@ -35,7 +35,12 @@ const App = () => {
   
   const [user, setUser] = useState(null);
   const [newCardText, setNewCardText] = useState("");
-  const [newAuthor, setNewAuthor] = useState("");
+  
+  // --- User Identity State ---
+  const [savedUserName, setSavedUserName] = useState(() => {
+    return localStorage.getItem('resident_voice_user_name') || "";
+  });
+  const [newAuthor, setNewAuthor] = useState(savedUserName);
   const [newGroupName, setNewGroupName] = useState("");
   const [view, setView] = useState("board");
   const [sortBy, setSortBy] = useState("votes"); // 'votes' or 'newest'
@@ -51,6 +56,8 @@ const App = () => {
   const [dropTargetGroupId, setDropTargetGroupId] = useState(null);
   const [dropTargetCardId, setDropTargetCardId] = useState(null);
   const [selectedCardId, setSelectedCardId] = useState(null);
+
+  const [votingCards, setVotingCards] = useState(new Set());
 
   const selectedCard = useMemo(() => 
     cards.find(c => c.id === selectedCardId), 
@@ -220,12 +227,24 @@ const App = () => {
     }
     
     try {
+      const authorName = newAuthor.trim() || "ไม่ระบุ";
+      
+      // Save name for future use (voting/posting)
+      if (authorName !== "ไม่ระบุ") {
+        let nameToSave = authorName;
+        if (nameToSave.length > 15) nameToSave = nameToSave.substring(0, 15);
+        localStorage.setItem('resident_voice_user_name', nameToSave);
+        setSavedUserName(nameToSave);
+      }
+
       await addDoc(collection(db, 'artifacts', currentBoardId, 'public', 'data', 'cards'), {
-        text: newCardText, author: newAuthor || "ไม่ระบุ", groupId: "uncategorized",
-        votes: 1, baseVotes: 1, likedBy: [user.uid], createdAt: Date.now(), parentId: null,
+        text: newCardText, author: authorName, groupId: "uncategorized",
+        votes: 1, baseVotes: 1, likedBy: [user.uid], likedNames: [{ uid: user.uid, name: authorName }], createdAt: Date.now(), parentId: null,
         creatorId: user.uid // Save who created it for deletion rights
       });
-      setNewCardText(""); setNewAuthor(""); setView('board');
+      setNewCardText(""); 
+      // Keep newAuthor as is to remember it for next time
+      setView('board');
     } catch (err) {
       console.error("Error adding card:", err);
       alert("ไม่สามารถบันทึกข้อมูลได้: " + err.message);
@@ -233,10 +252,7 @@ const App = () => {
   };
 
   const toggleLike = async (card) => {
-    if (!user) return;
-    const likedBy = card.likedBy || [];
-    const hasLiked = likedBy.includes(user.uid);
-    const newLikedBy = hasLiked ? likedBy.filter(id => id !== user.uid) : [...likedBy, user.uid];
+    if (!user || votingCards.has(card.id)) return;
     
     // Get current board and check if it's closed
     const currentBoard = boards.find(b => b.id === currentBoardId);
@@ -245,25 +261,50 @@ const App = () => {
       return;
     }
 
-    // Instead of completely resetting, we add or subtract 1 from the current "votes" 
-    // This allows manual edits in Firestore to persist
-    const currentVotes = card.votes || 0;
-    
-    // Get current board max votes limit
-    const limit = currentBoard?.maxVotes || 10;
+    setVotingCards(prev => new Set(prev).add(card.id));
 
-    // Check limit: allow unliking, but prevent liking if votes are limit or more
-    if (!hasLiked && currentVotes >= limit) {
-      alert(`ไม่สามารถโหวตได้: ข้อเสนอนี้ได้รับโหวตเต็มจำนวนแล้ว (สูงสุด ${limit} โหวต)`);
-      return;
+    try {
+        const likedBy = card.likedBy || [];
+        const likedNames = card.likedNames || [];
+        const hasLiked = likedBy.includes(user.uid);
+        const currentVotes = card.votes || 0;
+        const limit = currentBoard?.maxVotes || 10;
+        
+        let newLikedBy = [...likedBy];
+        let newLikedNames = [...likedNames];
+
+        // Check limit: allow unliking, but prevent liking if votes are limit or more
+        if (!hasLiked && currentVotes >= limit) {
+          alert(`ไม่สามารถโหวตได้: ข้อเสนอนี้ได้รับโหวตเต็มจำนวนแล้ว (สูงสุด ${limit} โหวต)`);
+          return;
+        }
+
+        if (hasLiked) {
+          // Unlike
+          newLikedBy = likedBy.filter(id => id !== user.uid);
+          newLikedNames = likedNames.filter(item => item.uid !== user.uid);
+        } else {
+          // Like
+          let voterName = savedUserName || "ไม่ระบุ";
+          
+          newLikedBy.push(user.uid);
+          newLikedNames.push({ uid: user.uid, name: voterName });
+        }
+        
+        const newVotes = hasLiked ? currentVotes - 1 : currentVotes + 1;
+        
+        await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', card.id), {
+          likedBy: newLikedBy, 
+          likedNames: newLikedNames,
+          votes: newVotes
+        });
+    } finally {
+        setVotingCards(prev => {
+            const next = new Set(prev);
+            next.delete(card.id);
+            return next;
+        });
     }
-    
-    const newVotes = hasLiked ? currentVotes - 1 : currentVotes + 1;
-    
-    await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', card.id), {
-      likedBy: newLikedBy, 
-      votes: newVotes
-    });
   };
 
   const unmergeCard = async (cardId) => {
@@ -447,8 +488,9 @@ const App = () => {
                 <textarea value={newCardText} onChange={(e) => setNewCardText(e.target.value)} className="w-full px-4 py-4 rounded-2xl border border-slate-300 bg-white text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 outline-none h-32 resize-none text-base font-sans shadow-sm placeholder:text-slate-400" placeholder="พิมพ์ข้อความที่ต้องการเสนอที่นี่..." required />
               </div>
               <div>
-                <label className="text-sm font-bold text-slate-700 block mb-2 font-sans">ชื่อ หรือ บ้านเลขที่ (ถ้ามี)</label>
-                <input type="text" value={newAuthor} onChange={(e) => setNewAuthor(e.target.value)} placeholder="เช่น บ้าน 12/3" className="w-full px-4 py-3 rounded-2xl border border-slate-300 bg-white text-slate-900 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 font-sans shadow-sm placeholder:text-slate-400" />
+                <label className="text-sm font-bold text-slate-700 block mb-2 font-sans">ชื่อ หรือ บ้านเลขที่ <span className="text-red-500">*</span></label>
+                <input type="text" value={newAuthor} maxLength={15} onChange={(e) => setNewAuthor(e.target.value)} placeholder="เช่น บ้าน 12/3 (บังคับกรอก)" required className="w-full px-4 py-3 rounded-2xl border border-slate-300 bg-white text-slate-900 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 font-sans shadow-sm placeholder:text-slate-400" />
+                <p className="text-[10px] text-slate-400 mt-1.5 font-sans">* ใส่ได้สูงสุด 15 ตัวอักษร</p>
               </div>
               <button type="submit" className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-4 rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 font-sans mt-8 text-lg border border-slate-800">
                 <Plus className="w-5 h-5" /> สร้างการ์ด
@@ -607,7 +649,7 @@ const App = () => {
                           onDragStart={(e) => handleDragStart(e, card.id)}
                           onDragOver={(e) => handleDragOver(e, card.id, 'card')}
                           onDrop={(e) => handleDrop(e, card.id, 'card')}
-                          className={`bg-white p-5 rounded-2xl border-2 transition-all ${isAdmin ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'} group relative flex flex-col h-[220px] hover:border-slate-400 ${
+                          className={`bg-white p-5 rounded-2xl border-2 transition-all ${isAdmin ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'} group relative flex flex-col min-h-[220px] hover:border-slate-400 ${
                             dropTargetCardId === card.id ? 'border-slate-800 shadow-lg scale-105 z-10' : 'border-slate-200 shadow-sm'
                           }`}
                         >
@@ -625,12 +667,18 @@ const App = () => {
 
                           <p className="text-slate-800 font-bold leading-relaxed mb-4 text-sm font-sans flex-grow">{card.text}</p>
                           
+                          {card.likedNames && card.likedNames.length > 0 && (
+                            <div className="mb-3 text-[10px] text-slate-500 font-sans line-clamp-2" title={card.likedNames.map(n => n.name).join(', ')}>
+                              <span className="font-bold">ผู้โหวต:</span> {card.likedNames.map(n => n.name).join(', ')}
+                            </div>
+                          )}
+
                           <div className="flex items-center justify-between mt-auto pt-3 border-t border-slate-100">
-                              <span className="text-[10px] text-slate-500 font-bold flex items-center gap-1.5 font-sans">
-                                  <Users className="w-3 h-3 text-slate-400" /> {card.author} {card.childrenCount > 0 && <span className="text-slate-700 bg-slate-100 px-1.5 rounded border border-slate-200">+ {card.childrenCount} รวมกัน</span>}
+                              <span className="text-[10px] text-slate-500 font-bold flex items-center gap-1.5 font-sans truncate pr-2">
+                                  <Users className="w-3 h-3 text-slate-400 flex-shrink-0" /> <span className="truncate">{card.author}</span> {card.childrenCount > 0 && <span className="text-slate-700 bg-slate-100 px-1.5 rounded border border-slate-200 flex-shrink-0">+ {card.childrenCount} รวมกัน</span>}
                               </span>
-                              <div className="flex items-center gap-1.5">
-                                  <button onClick={() => toggleLike(card)} className="p-1.5 text-slate-400 hover:text-emerald-600 transition-colors bg-slate-50 rounded-lg border border-slate-100">
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                  <button onClick={() => toggleLike(card)} title={card.likedNames?.map(n => n.name).join(', ')} className="p-1.5 text-slate-400 hover:text-emerald-600 transition-colors bg-slate-50 rounded-lg border border-slate-100 relative group">
                                     <ThumbsUp className={`w-3.5 h-3.5 ${card.likedBy?.includes(user?.uid) ? 'fill-current text-emerald-500' : ''}`} />
                                   </button>
                                   {card.childrenCount > 0 && (
@@ -660,8 +708,9 @@ const App = () => {
                   <tr className="bg-slate-100">
                     <th className="border border-slate-400 px-3 py-2 text-sm font-bold w-12 text-center text-slate-800">ลำดับ</th>
                     <th className="border border-slate-400 px-3 py-2 text-sm font-bold text-slate-800">เรื่องที่เสนอ</th>
-                    <th className="border border-slate-400 px-3 py-2 text-sm font-bold w-[20%] text-slate-800">ผู้เสนอ</th>
+                    <th className="border border-slate-400 px-3 py-2 text-sm font-bold w-[15%] text-slate-800">ผู้เสนอ</th>
                     <th className="border border-slate-400 px-3 py-2 text-sm font-bold w-16 text-center text-slate-800">โหวต</th>
+                    <th className="border border-slate-400 px-3 py-2 text-sm font-bold w-[25%] text-slate-800">ผู้โหวต</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -672,7 +721,7 @@ const App = () => {
                     return (
                       <React.Fragment key={`print-group-${group.id}`}>
                         <tr className="bg-slate-200 break-after-avoid">
-                          <td colSpan="4" className="border border-slate-400 px-3 py-2 text-sm font-black text-slate-900 uppercase">
+                          <td colSpan="5" className="border border-slate-400 px-3 py-2 text-sm font-black text-slate-900 uppercase">
                             หมวดหมู่: {group.name}
                           </td>
                         </tr>
@@ -687,6 +736,9 @@ const App = () => {
                                 </td>
                                 <td className="border border-slate-400 px-3 py-2 text-xs font-black text-slate-500 break-words">{card.author}</td>
                                 <td className="border border-slate-400 px-3 py-2 text-center text-sm font-black text-slate-900">{card.votes || 0}</td>
+                                <td className="border border-slate-400 px-3 py-2 text-xs text-slate-700 break-words">
+                                  {card.likedNames?.map(n => n.name).join(', ') || '-'}
+                                </td>
                               </tr>
                               {children.map((child, childIdx) => (
                                 <tr key={`print-child-${child.id}`} className="break-inside-avoid bg-slate-50">
@@ -696,6 +748,9 @@ const App = () => {
                                   </td>
                                   <td className="border border-slate-400 px-3 py-2 text-xs font-black text-slate-500 break-words">{child.author}</td>
                                   <td className="border border-slate-400 px-3 py-2 text-center text-sm font-bold text-slate-600">{child.votes || 0}</td>
+                                  <td className="border border-slate-400 px-3 py-2 text-xs text-slate-600 break-words">
+                                    {child.likedNames?.map(n => n.name).join(', ') || '-'}
+                                  </td>
                                 </tr>
                               ))}
                             </React.Fragment>
@@ -706,7 +761,7 @@ const App = () => {
                   })}
                   {displayCards.length === 0 && (
                     <tr>
-                      <td colSpan="4" className="border border-slate-400 p-4 text-center text-slate-500 font-bold">ไม่มีข้อมูลในหัวข้อนี้</td>
+                      <td colSpan="5" className="border border-slate-400 p-4 text-center text-slate-500 font-bold">ไม่มีข้อมูลในหัวข้อนี้</td>
                     </tr>
                   )}
                 </tbody>
