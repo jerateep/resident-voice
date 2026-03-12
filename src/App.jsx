@@ -1,17 +1,19 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  Plus, FolderPlus, MessageSquare, 
-  Users, ThumbsUp, Clock, 
-  TrendingUp, X, Link2Off, Printer, Info, Merge, Share2, Lock, Unlock
+import {
+  Plus, FolderPlus, MessageSquare,
+  Users, ThumbsUp, Clock,
+  TrendingUp, X, Link2Off, Printer, Info, Merge, Share2, Lock, Unlock, Search, AlertTriangle
 } from 'lucide-react';
+import DOMPurify from 'dompurify';
+import FingerprintJS from '@fingerprintjs/fingerprintjs';
+import Fuse from 'fuse.js';
 
 // Firebase Imports
 import { collection, doc, setDoc, onSnapshot, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { auth, db } from './firebase';
+import { signInAnonymously, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
+import { auth, db, googleProvider } from './firebase';
 
 const defaultAppId = import.meta.env.VITE_APP_ID || 'resident-idea-board-free';
-const adminPin = import.meta.env.VITE_ADMIN_PIN;
 
 const App = () => {
   // --- New State for Multiple Boards ---
@@ -23,7 +25,7 @@ const App = () => {
   const [newBoardName, setNewBoardName] = useState("");
   const [newMaxVotes, setNewMaxVotes] = useState(10);
   const [editingMaxVotes, setEditingMaxVotes] = useState(null);
-  
+
   // --- Existing State ---
   const [cards, setCards] = useState([]);
   const [groups, setGroups] = useState([
@@ -32,10 +34,28 @@ const App = () => {
     { id: "activities", name: "กิจกรรม/นันทนาการ", color: "bg-green-100" },
     { id: "security", name: "ความปลอดภัย", color: "bg-red-100" }
   ]);
-  
+
   const [user, setUser] = useState(null);
   const [newCardText, setNewCardText] = useState("");
-  
+  const [visitorId, setVisitorId] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [duplicateWarning, setDuplicateWarning] = useState(null);
+  const [showDuplicateWarning, setShowDuplicateWarning] = useState(false);
+
+  // Initialize FingerprintJS
+  useEffect(() => {
+    const initFingerprint = async () => {
+      try {
+        const fp = await FingerprintJS.load();
+        const result = await fp.get();
+        setVisitorId(result.visitorId);
+      } catch (err) {
+        console.error("Fingerprint error:", err);
+      }
+    };
+    initFingerprint();
+  }, []);
+
   // --- User Identity State ---
   const [savedUserName, setSavedUserName] = useState(() => {
     return localStorage.getItem('resident_voice_user_name') || "";
@@ -45,12 +65,11 @@ const App = () => {
   const [view, setView] = useState("board");
   const [sortBy, setSortBy] = useState("votes"); // 'votes' or 'newest'
   const [isLoading, setIsLoading] = useState(true);
-  
+
   // --- Admin State ---
   const [isAdmin, setIsAdmin] = useState(false);
-  const [showPinModal, setShowPinModal] = useState(false);
-  const [pinInput, setPinInput] = useState("");
-  
+  const [adminUser, setAdminUser] = useState(null);
+
   // Drag and Drop States
   const [draggedCardId, setDraggedCardId] = useState(null);
   const [dropTargetGroupId, setDropTargetGroupId] = useState(null);
@@ -59,10 +78,47 @@ const App = () => {
 
   const [votingCards, setVotingCards] = useState(new Set());
 
-  const selectedCard = useMemo(() => 
-    cards.find(c => c.id === selectedCardId), 
+  const selectedCard = useMemo(() =>
+    cards.find(c => c.id === selectedCardId),
     [cards, selectedCardId]
   );
+
+  const logAdminAction = async (action, cardId, targetCardId = null) => {
+    if (!isAdmin || !adminUser) return;
+    try {
+      await addDoc(collection(db, 'artifacts', currentBoardId, 'public', 'data', 'auditLogs'), {
+        action,
+        adminUid: adminUser.uid,
+        adminEmail: adminUser.email,
+        cardId,
+        targetCardId,
+        timestamp: Date.now()
+      });
+    } catch (err) {
+      console.error("Audit log error:", err);
+    }
+  };
+
+  // Duplicate check logic
+  const handleTextChange = (e) => {
+    const text = e.target.value;
+    setNewCardText(text);
+
+    if (text.length > 10) {
+      const fuse = new Fuse(cards, { keys: ['text'], threshold: 0.3 });
+      const results = fuse.search(text);
+      if (results.length > 0) {
+        setDuplicateWarning(results[0].item);
+        setShowDuplicateWarning(true);
+      } else {
+        setShowDuplicateWarning(false);
+        setDuplicateWarning(null);
+      }
+    } else {
+      setShowDuplicateWarning(false);
+      setDuplicateWarning(null);
+    }
+  };
 
   // 1. Auth Initialization
   useEffect(() => {
@@ -71,10 +127,47 @@ const App = () => {
         await signInAnonymously(auth);
       } catch (err) { console.error("Authentication failed:", err); }
     };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        if (!currentUser.isAnonymous) {
+          setAdminUser(currentUser);
+        } else {
+          setAdminUser(null);
+        }
+      } else {
+        setUser(null);
+        setAdminUser(null);
+        initAuth();
+      }
+    });
     return () => unsubscribe();
   }, []);
+
+  // Check Admin Status using Firestore
+  useEffect(() => {
+    let unsub = null;
+    const checkAdmin = async () => {
+      if (adminUser) {
+        unsub = onSnapshot(doc(db, 'admins', adminUser.uid), (docSnap) => {
+          if (docSnap.exists() && docSnap.data().role === 'admin') {
+            setIsAdmin(true);
+          } else {
+            setIsAdmin(false);
+          }
+        }, (error) => {
+          console.error("Admin check error:", error);
+          setIsAdmin(false);
+        });
+      } else {
+        setIsAdmin(false);
+        if (unsub) unsub();
+      }
+    };
+    checkAdmin();
+    return () => { if (unsub) unsub(); };
+  }, [adminUser]);
 
   // Update URL seamlessly when board changes
   useEffect(() => {
@@ -90,23 +183,20 @@ const App = () => {
     alert('คัดลอกลิงก์สำหรับหน้านี้เรียบร้อยแล้ว! สามารถนำไปส่งให้ลูกบ้านได้เลยครับ');
   };
 
-  const toggleAdmin = () => {
-    if (isAdmin) {
-      setIsAdmin(false);
-    } else {
-      setShowPinModal(true);
-      setPinInput("");
+  const handleAdminSignIn = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Google Sign-in Error:", error);
+      alert("ไม่สามารถเข้าสู่ระบบด้วย Google ได้: " + error.message);
     }
   };
 
-  const handlePinSubmit = (e) => {
-    e.preventDefault();
-    if (pinInput === adminPin) {
-      setIsAdmin(true);
-      setShowPinModal(false);
-    } else {
-      alert('รหัสผ่านไม่ถูกต้อง');
-      setPinInput("");
+  const handleAdminSignOut = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Sign-out Error:", error);
     }
   };
 
@@ -116,14 +206,14 @@ const App = () => {
     const boardsCol = collection(db, 'boards');
     const unsubBoards = onSnapshot(boardsCol, (snapshot) => {
       const loadedBoards = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
+
       // Auto-create default board if completely empty
       if (loadedBoards.length === 0) {
-        setDoc(doc(boardsCol, defaultAppId), { 
-          id: defaultAppId, 
-          name: "Topic", 
+        setDoc(doc(boardsCol, defaultAppId), {
+          id: defaultAppId,
+          name: "Topic",
           maxVotes: 10,
-          createdAt: Date.now() 
+          createdAt: Date.now()
         });
       } else {
         // Sort by newest first
@@ -136,7 +226,7 @@ const App = () => {
   // 2. Data Sync for Current Board
   useEffect(() => {
     if (!user || !currentBoardId) return;
-    
+
     setIsLoading(true); // reset loading state when switching boards
 
     const cardsCol = collection(db, 'artifacts', currentBoardId, 'public', 'data', 'cards');
@@ -198,37 +288,51 @@ const App = () => {
     e.stopPropagation();
     const sourceId = e.dataTransfer.getData("cardId");
     setDropTargetGroupId(null); setDropTargetCardId(null); setDraggedCardId(null);
-    
+
     if (!sourceId || sourceId === targetId) return;
 
     if (type === 'group') {
-      await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', sourceId), { 
-        groupId: targetId, parentId: null 
+      await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', sourceId), {
+        groupId: targetId, parentId: null
       });
+      await logAdminAction('MOVE_CARD', sourceId, targetId);
     } else if (type === 'card') {
       const targetCard = cards.find(c => c.id === targetId);
       if (targetCard) {
-        await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', sourceId), { 
+        await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', sourceId), {
           parentId: targetId, groupId: targetCard.groupId
         });
+        await logAdminAction('MERGE_CARD', sourceId, targetId);
       }
     }
   };
 
   const addCard = async (e) => {
     e.preventDefault();
-    if (!newCardText.trim() || !user) return;
-    
+    if (!newCardText.trim() || !user || !visitorId) {
+      if (!visitorId) alert("กำลังติดตั้งระบบความปลอดภัย กรุณารอสักครู่...");
+      return;
+    }
+
     // Check if board is closed
     const currentBoard = boards.find(b => b.id === currentBoardId);
     if (currentBoard?.status === 'closed') {
       alert("ไม่สามารถเพิ่มข้อเสนอได้: หัวข้อนี้ถูกปิดรับความคิดเห็นแล้ว");
       return;
     }
-    
+
+    const maxCards = currentBoard?.maxCardsPerUser || 3;
+    const userCardsCount = cards.filter(c => c.creatorDevice === visitorId).length;
+
+    if (userCardsCount >= maxCards && !isAdmin) {
+        alert(`คุณสร้างข้อเสนอครบโควต้าแล้ว (สูงสุด ${maxCards} ข้อความต่อ 1 เครื่อง/บัญชีผู้ใช้งาน)`);
+        return;
+    }
+
     try {
-      const authorName = newAuthor.trim() || "ไม่ระบุ";
-      
+      const authorName = DOMPurify.sanitize(newAuthor.trim() || "ไม่ระบุ", { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
+      const safeText = DOMPurify.sanitize(newCardText, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
+
       // Save name for future use (voting/posting)
       if (authorName !== "ไม่ระบุ") {
         let nameToSave = authorName;
@@ -238,11 +342,11 @@ const App = () => {
       }
 
       await addDoc(collection(db, 'artifacts', currentBoardId, 'public', 'data', 'cards'), {
-        text: newCardText, author: authorName, groupId: "uncategorized",
-        votes: 1, baseVotes: 1, likedBy: [user.uid], likedNames: [{ uid: user.uid, name: authorName }], createdAt: Date.now(), parentId: null,
-        creatorId: user.uid // Save who created it for deletion rights
+        text: safeText, author: authorName, groupId: "uncategorized",
+        votes: 1, baseVotes: 1, likedBy: [user.uid], likedNames: [{ uid: user.uid, name: authorName }], likedDevices: [visitorId], createdAt: Date.now(), parentId: null,
+        creatorId: user.uid, creatorDevice: visitorId
       });
-      setNewCardText(""); 
+      setNewCardText("");
       // Keep newAuthor as is to remember it for next time
       setView('board');
     } catch (err) {
@@ -252,8 +356,8 @@ const App = () => {
   };
 
   const toggleLike = async (card) => {
-    if (!user || votingCards.has(card.id)) return;
-    
+    if (!user || !visitorId || votingCards.has(card.id)) return;
+
     // Get current board and check if it's closed
     const currentBoard = boards.find(b => b.id === currentBoardId);
     if (currentBoard?.status === 'closed') {
@@ -264,61 +368,68 @@ const App = () => {
     setVotingCards(prev => new Set(prev).add(card.id));
 
     try {
-        const likedBy = card.likedBy || [];
-        const likedNames = card.likedNames || [];
-        const hasLiked = likedBy.includes(user.uid);
-        const currentVotes = card.votes || 0;
-        const limit = currentBoard?.maxVotes || 10;
-        
-        let newLikedBy = [...likedBy];
-        let newLikedNames = [...likedNames];
+      const likedBy = card.likedBy || [];
+      const likedNames = card.likedNames || [];
+      const likedDevices = card.likedDevices || [];
+      
+      const hasLiked = likedBy.includes(user.uid) || likedDevices.includes(visitorId);
+      const currentVotes = card.votes || 0;
+      const limit = currentBoard?.maxVotes || 10;
 
-        // Check limit: allow unliking, but prevent liking if votes are limit or more
-        if (!hasLiked && currentVotes >= limit) {
-          alert(`ไม่สามารถโหวตได้: ข้อเสนอนี้ได้รับโหวตเต็มจำนวนแล้ว (สูงสุด ${limit} โหวต)`);
-          return;
-        }
+      let newLikedBy = [...likedBy];
+      let newLikedNames = [...likedNames];
+      let newLikedDevices = [...likedDevices];
 
-        if (hasLiked) {
-          // Unlike
-          newLikedBy = likedBy.filter(id => id !== user.uid);
-          newLikedNames = likedNames.filter(item => item.uid !== user.uid);
-        } else {
-          // Like
-          let voterName = savedUserName || "ไม่ระบุ";
-          
-          newLikedBy.push(user.uid);
-          newLikedNames.push({ uid: user.uid, name: voterName });
-        }
-        
-        const newVotes = hasLiked ? currentVotes - 1 : currentVotes + 1;
-        
-        await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', card.id), {
-          likedBy: newLikedBy, 
-          likedNames: newLikedNames,
-          votes: newVotes
-        });
+      // Check limit: allow unliking, but prevent liking if votes are limit or more
+      if (!hasLiked && currentVotes >= limit) {
+        alert(`ไม่สามารถโหวตได้: ข้อเสนอนี้ได้รับโหวตเต็มจำนวนแล้ว (สูงสุด ${limit} โหวต)`);
+        return;
+      }
+
+      if (hasLiked) {
+        // Unlike
+        newLikedBy = likedBy.filter(id => id !== user.uid);
+        newLikedNames = likedNames.filter(item => item.uid !== user.uid);
+        newLikedDevices = likedDevices.filter(deviceId => deviceId !== visitorId);
+      } else {
+        // Like
+        let voterName = savedUserName || "ไม่ระบุ";
+
+        newLikedBy.push(user.uid);
+        newLikedNames.push({ uid: user.uid, name: voterName });
+        if (!newLikedDevices.includes(visitorId)) newLikedDevices.push(visitorId);
+      }
+
+      const newVotes = hasLiked ? currentVotes - 1 : currentVotes + 1;
+
+      await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', card.id), {
+        likedBy: newLikedBy,
+        likedNames: newLikedNames,
+        likedDevices: newLikedDevices,
+        votes: newVotes
+      });
     } finally {
-        setVotingCards(prev => {
-            const next = new Set(prev);
-            next.delete(card.id);
-            return next;
-        });
+      setVotingCards(prev => {
+        const next = new Set(prev);
+        next.delete(card.id);
+        return next;
+      });
     }
   };
 
   const unmergeCard = async (cardId) => {
     if (!isAdmin) return;
-    await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', cardId), { 
-      parentId: null 
+    await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', cardId), {
+      parentId: null
     });
   };
 
   const deleteCard = async (id) => {
     if (!isAdmin) return;
     const children = cards.filter(c => c.parentId === id);
-    for(const child of children) await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', child.id), { parentId: null });
+    for (const child of children) await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', child.id), { parentId: null });
     await deleteDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', id));
+    await logAdminAction('DELETE_CARD', id);
   };
 
   const addGroup = async () => {
@@ -335,19 +446,19 @@ const App = () => {
 
   const deleteGroup = async (groupId) => {
     if (!isAdmin || groupId === "uncategorized") return; // Prevent deleting the default group
-    
+
     // Auto move all cards in the deleted group to "uncategorized"
     const groupCards = cards.filter(c => c.groupId === groupId);
     for (const card of groupCards) {
-      await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', card.id), { 
-        groupId: "uncategorized" 
+      await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'cards', card.id), {
+        groupId: "uncategorized"
       });
     }
-    
+
     // Delete the group itself
     await deleteDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'groups', groupId));
   };
-  
+
   // Manage Boards Methods
   const addBoard = async () => {
     if (!isAdmin || !newBoardName.trim()) return;
@@ -379,6 +490,7 @@ const App = () => {
     try {
       const newStatus = currentStatus === 'open' ? 'closed' : 'open';
       await updateDoc(doc(db, 'boards', boardId), { status: newStatus });
+      await logAdminAction(newStatus === 'closed' ? 'CLOSE_BOARD' : 'OPEN_BOARD', boardId);
     } catch (err) {
       console.error("Error updating board status:", err);
       alert("ไม่สามารถเปลี่ยนสถานะได้");
@@ -387,6 +499,14 @@ const App = () => {
 
   const displayCards = useMemo(() => {
     let rootCards = cards.filter(c => !c.parentId);
+
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      rootCards = rootCards.filter(c => 
+        (c.text && c.text.toLowerCase().includes(query)) ||
+        (c.author && c.author.toLowerCase().includes(query))
+      );
+    }
     const enriched = rootCards.map(parent => {
       const children = cards.filter(c => c.parentId === parent.id);
       const totalVotes = (parent.votes || 0) + children.reduce((sum, child) => sum + (child.votes || 0), 0);
@@ -424,16 +544,17 @@ const App = () => {
               <p className="text-[10px] text-slate-400 mt-1 font-bold tracking-wide">กระดานรับฟังความคิดเห็นลูกบ้าน</p>
             </div>
           </div>
-          
+
           <div className="flex items-center gap-4">
-            <button 
-              onClick={toggleAdmin}
+            <button
+              onClick={isAdmin ? handleAdminSignOut : handleAdminSignIn}
+              title={isAdmin ? `เข้าสู่ระบบโดย: ${adminUser?.email || ''}` : ''}
               className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm border ${isAdmin ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}
             >
-              {isAdmin ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />} 
-              {isAdmin ? 'สิทธิ์ผู้ดูแลระบบ: เปิดใช้งาน' : 'เข้าสู่ระบบผู้ดูแล'}
+              {isAdmin ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+              {isAdmin ? 'สิทธิ์ผู้ดูแลระบบ: เปิดใช้งาน' : 'เข้าสู่ระบบด้วย Google'}
             </button>
-            <button 
+            <button
               onClick={() => window.print()}
               className="hidden md:flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shadow-md"
             >
@@ -449,11 +570,11 @@ const App = () => {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto p-4 md:p-6 print:p-0">
-        
+
         {/* Print Only Header */}
         <div className="hidden print:block mb-6 text-center border-b-2 border-black pb-4 mt-4">
           <h1 className="text-3xl font-black uppercase text-black tracking-tight">สรุปความคิดเห็นลูกบ้าน</h1>
-          <h2 className="text-xl font-bold text-gray-800 mt-2">หัวข้อ: {boards.find(b=>b.id === currentBoardId)?.name}</h2>
+          <h2 className="text-xl font-bold text-gray-800 mt-2">หัวข้อ: {boards.find(b => b.id === currentBoardId)?.name}</h2>
           <p className="text-gray-600 font-bold mt-1">พิมพ์วันที่: {new Date().toLocaleDateString('th-TH')}</p>
         </div>
 
@@ -461,14 +582,14 @@ const App = () => {
           <div className="max-w-xl mx-auto mt-8 bg-white rounded-3xl shadow-xl p-8 border border-slate-200 print:hidden relative overflow-hidden">
             <h2 className="text-2xl font-black text-slate-900 text-center mb-8 font-sans">เขียนเสนอข้อมูล</h2>
             <form onSubmit={addCard} className="space-y-6 relative z-10">
-              
+
               {/* Board Selection in Form */}
               <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200 flex flex-col gap-3">
                 <label className="text-sm font-bold text-slate-700 font-sans flex items-center gap-2">
                   <FolderPlus className="w-4 h-4" /> เลือกหัวข้อที่ต้องการเสนอข้อมูล:
                 </label>
                 <div className="flex gap-3">
-                  <select 
+                  <select
                     className="flex-1 bg-white border border-slate-300 text-slate-900 text-base rounded-xl py-3 px-4 font-bold outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 transition-all cursor-pointer shadow-sm"
                     value={currentBoardId}
                     onChange={(e) => setCurrentBoardId(e.target.value)}
@@ -485,7 +606,21 @@ const App = () => {
 
               <div>
                 <label className="text-sm font-bold text-slate-700 block mb-2 font-sans">ข้อความที่ต้องการเสนอ</label>
-                <textarea value={newCardText} onChange={(e) => setNewCardText(e.target.value)} className="w-full px-4 py-4 rounded-2xl border border-slate-300 bg-white text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 outline-none h-32 resize-none text-base font-sans shadow-sm placeholder:text-slate-400" placeholder="พิมพ์ข้อความที่ต้องการเสนอที่นี่..." required />
+                <textarea value={newCardText} onChange={handleTextChange} className="w-full px-4 py-4 rounded-2xl border border-slate-300 bg-white text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 outline-none h-32 resize-none text-base font-sans shadow-sm placeholder:text-slate-400" placeholder="พิมพ์ข้อความที่ต้องการเสนอที่นี่..." required />
+              
+                {/* Duplicate Warning */}
+                {showDuplicateWarning && duplicateWarning && (
+                  <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl p-4 flex gap-3 animate-in fade-in duration-300">
+                    <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
+                    <div>
+                      <h4 className="text-sm font-bold text-amber-800">มีข้อเสนอที่คล้ายกันอยู่แล้ว</h4>
+                      <p className="text-xs text-amber-700 mt-1 line-clamp-2">"{duplicateWarning.text}" (โดย {duplicateWarning.author})</p>
+                      <button type="button" onClick={() => setView('board')} className="text-xs font-black text-amber-700 hover:text-amber-900 mt-2 underline">
+                        ไปที่กระดานเพื่อโหวตแทน
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
               <div>
                 <label className="text-sm font-bold text-slate-700 block mb-2 font-sans">ชื่อ หรือ บ้านเลขที่ <span className="text-red-500">*</span></label>
@@ -508,8 +643,19 @@ const App = () => {
                 หัวข้อปัจจุบัน:
               </div>
               <div className="flex flex-wrap gap-3 w-full md:w-auto items-center">
-                <select 
-                  className="flex-1 md:flex-none bg-slate-50 border border-slate-300 text-slate-900 text-sm rounded-xl py-2.5 px-4 font-bold outline-none focus:border-slate-500 transition-colors shadow-sm min-w-[200px]"
+                <div className="relative flex-1 md:flex-none">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="ค้นหาข้อเสนอ..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-300 text-slate-900 text-sm rounded-xl font-bold outline-none focus:border-slate-500 transition-colors shadow-sm min-w-[200px]"
+                  />
+                </div>
+                
+                <select
+                  className="md:flex-none bg-slate-50 border border-slate-300 text-slate-900 text-sm rounded-xl py-2.5 px-4 font-bold outline-none focus:border-slate-500 transition-colors shadow-sm"
                   value={currentBoardId}
                   onChange={(e) => setCurrentBoardId(e.target.value)}
                 >
@@ -517,49 +663,48 @@ const App = () => {
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </select>
-                
+
                 {isAdmin && (
                   <div className="flex items-center gap-2">
-                    <button 
+                    <button
                       onClick={() => {
-                        const confirmMsg = boards.find(b => b.id === currentBoardId)?.status === 'closed' 
+                        const confirmMsg = boards.find(b => b.id === currentBoardId)?.status === 'closed'
                           ? "แน่ใจหรือไม่ที่จะ เปิดรับข้อเสนอและการโหวต สำหรับหัวข้อนี้อีกครั้ง?"
                           : "แน่ใจหรือไม่ที่จะ ปิดรับข้อเสนอและปิดโหวต สำหรับหัวข้อนี้?\n(ผู้ใช้จะยังอ่านได้แต่ไม่สามารถโหวตหรือพิมพ์เสนอได้อีก)";
                         if (window.confirm(confirmMsg)) {
                           toggleBoardStatus(currentBoardId, boards.find(b => b.id === currentBoardId)?.status);
                         }
                       }}
-                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 ${
-                        boards.find(b => b.id === currentBoardId)?.status === 'closed'
-                        ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
-                        : 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100'
-                      }`}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 ${boards.find(b => b.id === currentBoardId)?.status === 'closed'
+                          ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
+                          : 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100'
+                        }`}
                     >
                       {boards.find(b => b.id === currentBoardId)?.status === 'closed' ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
                       สถานะ: {boards.find(b => b.id === currentBoardId)?.status === 'closed' ? 'ปิดรับข้อมูลแล้ว' : 'กำลังเปิดรับข้อมูล'}
                     </button>
-                    
+
                     <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">จำกัดโหวต:</span>
-                    {editingMaxVotes === currentBoardId ? (
-                      <input 
-                        type="number" 
-                        min="1" 
-                        autoFocus
-                        defaultValue={boards.find(b => b.id === currentBoardId)?.maxVotes || 10}
-                        onBlur={(e) => updateBoardMaxVotes(currentBoardId, Number(e.target.value))}
-                        onKeyPress={(e) => e.key === 'Enter' && updateBoardMaxVotes(currentBoardId, Number(e.target.value))}
-                        className="w-12 py-1 px-1 text-center border border-blue-400 rounded text-xs font-bold outline-none"
-                      />
-                    ) : (
-                      <button 
-                        onClick={() => setEditingMaxVotes(currentBoardId)}
-                        className="text-xs font-black text-slate-700 hover:text-blue-600 px-2 py-1 rounded hover:bg-white transition-colors flex items-center gap-1"
-                        title="คลิกเพื่อแก้ไข"
-                      >
-                        {boards.find(b => b.id === currentBoardId)?.maxVotes || 10}
-                      </button>
-                    )}
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">จำกัดโหวต:</span>
+                      {editingMaxVotes === currentBoardId ? (
+                        <input
+                          type="number"
+                          min="1"
+                          autoFocus
+                          defaultValue={boards.find(b => b.id === currentBoardId)?.maxVotes || 10}
+                          onBlur={(e) => updateBoardMaxVotes(currentBoardId, Number(e.target.value))}
+                          onKeyPress={(e) => e.key === 'Enter' && updateBoardMaxVotes(currentBoardId, Number(e.target.value))}
+                          className="w-12 py-1 px-1 text-center border border-blue-400 rounded text-xs font-bold outline-none"
+                        />
+                      ) : (
+                        <button
+                          onClick={() => setEditingMaxVotes(currentBoardId)}
+                          className="text-xs font-black text-slate-700 hover:text-blue-600 px-2 py-1 rounded hover:bg-white transition-colors flex items-center gap-1"
+                          title="คลิกเพื่อแก้ไข"
+                        >
+                          {boards.find(b => b.id === currentBoardId)?.maxVotes || 10}
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -582,25 +727,25 @@ const App = () => {
                   </button>
                 </div>
               </div>
-              
+
               <div className="flex flex-wrap items-center gap-3">
                 {isAdmin && (
                   <>
                     <div className="flex gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-300">
                       <div className="relative">
-                          <input type="text" value={newBoardName} onChange={(e) => setNewBoardName(e.target.value)} placeholder="เริ่มหัวข้อใหม่..." className="pl-3 pr-8 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none w-32 font-bold placeholder:text-slate-400 focus:border-slate-500" onKeyPress={(e) => e.key === 'Enter' && addBoard()} />
+                        <input type="text" value={newBoardName} onChange={(e) => setNewBoardName(e.target.value)} placeholder="เริ่มหัวข้อใหม่..." className="pl-3 pr-8 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none w-32 font-bold placeholder:text-slate-400 focus:border-slate-500" onKeyPress={(e) => e.key === 'Enter' && addBoard()} />
                       </div>
                       <div className="relative flex items-center gap-1">
-                          <span className="text-xs font-bold text-slate-600">จำกัดโหวต:</span>
-                          <input type="number" min="1" value={newMaxVotes} onChange={(e) => setNewMaxVotes(Number(e.target.value))} className="w-14 pl-2 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none font-bold focus:border-slate-500 text-center" />
-                          <button onClick={addBoard} className="ml-1 bg-slate-900 text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors"><Plus className="w-4 h-4" /></button>
+                        <span className="text-xs font-bold text-slate-600">จำกัดโหวต:</span>
+                        <input type="number" min="1" value={newMaxVotes} onChange={(e) => setNewMaxVotes(Number(e.target.value))} className="w-14 pl-2 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none font-bold focus:border-slate-500 text-center" />
+                        <button onClick={addBoard} className="ml-1 bg-slate-900 text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors"><Plus className="w-4 h-4" /></button>
                       </div>
                     </div>
 
                     <div className="w-[1px] h-8 bg-slate-200 hidden sm:block"></div>
                     <div className="relative bg-slate-50 p-1.5 rounded-xl border border-slate-300 flex">
-                        <input type="text" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="เพิ่มกลุ่มใหม่..." className="pl-3 pr-8 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none w-32 font-bold placeholder:text-slate-400 focus:border-slate-500 transition-colors" onKeyPress={(e) => e.key === 'Enter' && addGroup()} />
-                        <button onClick={addGroup} className="ml-2 bg-slate-900 text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors"><FolderPlus className="w-4 h-4" /></button>
+                      <input type="text" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="เพิ่มกลุ่มใหม่..." className="pl-3 pr-8 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none w-32 font-bold placeholder:text-slate-400 focus:border-slate-500 transition-colors" onKeyPress={(e) => e.key === 'Enter' && addGroup()} />
+                      <button onClick={addGroup} className="ml-2 bg-slate-900 text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors"><FolderPlus className="w-4 h-4" /></button>
                     </div>
                   </>
                 )}
@@ -618,18 +763,17 @@ const App = () => {
                     onDragOver={(e) => handleDragOver(e, group.id, 'group')}
                     onDrop={(e) => handleDrop(e, group.id, 'group')}
                     onDragLeave={handleDragLeave}
-                    className={`w-full rounded-3xl border p-4 min-h-[600px] flex flex-col transition-all bg-white shadow-sm ${
-                      dropTargetGroupId === group.id ? 'border-slate-800 scale-[1.02] shadow-lg' : 'border-slate-200'
-                    }`}
+                    className={`w-full rounded-3xl border p-4 min-h-[600px] flex flex-col transition-all bg-white shadow-sm ${dropTargetGroupId === group.id ? 'border-slate-800 scale-[1.02] shadow-lg' : 'border-slate-200'
+                      }`}
                   >
                     <div className="flex items-center justify-between mb-5 px-2 border-b border-slate-100 pb-3">
                       <h3 className="font-black text-slate-800 text-sm uppercase flex items-center gap-2">
-                          {group.name}
-                          <span className="text-slate-500 font-bold bg-slate-100 px-2 py-0.5 rounded-md text-xs">{groupCards.length}</span>
+                        {group.name}
+                        <span className="text-slate-500 font-bold bg-slate-100 px-2 py-0.5 rounded-md text-xs">{groupCards.length}</span>
                       </h3>
                       {group.id !== "uncategorized" && isAdmin && (
-                        <button 
-                          onClick={() => { if(window.confirm(`ต้องการลบกลุ่ม "${group.name}" ใช่หรือไม่?\nข้อมูลในการ์ดทั้งหมดจะถูกย้ายไปที่ "ยังไม่ได้จัดกลุ่ม"`)) deleteGroup(group.id) }} 
+                        <button
+                          onClick={() => { if (window.confirm(`ต้องการลบกลุ่ม "${group.name}" ใช่หรือไม่?\nข้อมูลในการ์ดทั้งหมดจะถูกย้ายไปที่ "ยังไม่ได้จัดกลุ่ม"`)) deleteGroup(group.id) }}
                           className="text-slate-400 hover:text-red-500 transition-colors"
                           title="ลบกลุ่มนี้"
                         >
@@ -643,58 +787,58 @@ const App = () => {
                         const currentBoardObj = boards.find(b => b.id === currentBoardId);
                         const maxLimit = currentBoardObj?.maxVotes || 10;
                         return (
-                        <div 
-                          key={card.id} 
-                          draggable={isAdmin}
-                          onDragStart={(e) => handleDragStart(e, card.id)}
-                          onDragOver={(e) => handleDragOver(e, card.id, 'card')}
-                          onDrop={(e) => handleDrop(e, card.id, 'card')}
-                          className={`bg-white p-5 rounded-2xl border-2 transition-all ${isAdmin ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'} group relative flex flex-col min-h-[220px] hover:border-slate-400 ${
-                            dropTargetCardId === card.id ? 'border-slate-800 shadow-lg scale-105 z-10' : 'border-slate-200 shadow-sm'
-                          }`}
-                        >
-                          <div className="flex justify-between items-start mb-4 mt-1">
-                            {card.totalVotes >= maxLimit && (
-                              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-red-50 border border-red-200 text-red-600 rounded-lg w-fit">
+                          <div
+                            key={card.id}
+                            draggable={isAdmin}
+                            onDragStart={(e) => handleDragStart(e, card.id)}
+                            onDragOver={(e) => handleDragOver(e, card.id, 'card')}
+                            onDrop={(e) => handleDrop(e, card.id, 'card')}
+                            className={`bg-white p-5 rounded-2xl border-2 transition-all ${isAdmin ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'} group relative flex flex-col min-h-[220px] hover:border-slate-400 ${dropTargetCardId === card.id ? 'border-slate-800 shadow-lg scale-105 z-10' : 'border-slate-200 shadow-sm'
+                              }`}
+                          >
+                            <div className="flex justify-between items-start mb-4 mt-1">
+                              {card.totalVotes >= maxLimit && (
+                                <div className="flex items-center gap-1.5 px-2.5 py-1 bg-red-50 border border-red-200 text-red-600 rounded-lg w-fit">
                                   <TrendingUp className="w-3 h-3 flex-shrink-0" />
                                   <span className="text-[10px] font-black uppercase whitespace-nowrap">คนโหวตเต็มแล้ว</span>
+                                </div>
+                              )}
+                              <div className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 flex-shrink-0 rounded-lg text-xs font-black border ${card.totalVotes >= maxLimit ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : (sortBy === 'votes' ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-50 text-slate-600 border-slate-200')}`}>
+                                <ThumbsUp className="w-3 h-3" /> {Math.min(card.totalVotes, maxLimit)}/{maxLimit}
+                              </div>
+                            </div>
+
+                            <p className="text-slate-800 font-bold leading-relaxed mb-4 text-sm font-sans flex-grow">{card.text}</p>
+
+                            {card.likedNames && card.likedNames.length > 0 && (
+                              <div className="mb-3 text-[10px] text-slate-500 font-sans line-clamp-2" title={card.likedNames.map(n => n.name).join(', ')}>
+                                <span className="font-bold">ผู้โหวต:</span> {card.likedNames.map(n => n.name).join(', ')}
                               </div>
                             )}
-                            <div className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 flex-shrink-0 rounded-lg text-xs font-black border ${card.totalVotes >= maxLimit ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : (sortBy === 'votes' ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-50 text-slate-600 border-slate-200')}`}>
-                              <ThumbsUp className="w-3 h-3" /> {Math.min(card.totalVotes, maxLimit)}/{maxLimit}
-                            </div>
-                          </div>
 
-                          <p className="text-slate-800 font-bold leading-relaxed mb-4 text-sm font-sans flex-grow">{card.text}</p>
-                          
-                          {card.likedNames && card.likedNames.length > 0 && (
-                            <div className="mb-3 text-[10px] text-slate-500 font-sans line-clamp-2" title={card.likedNames.map(n => n.name).join(', ')}>
-                              <span className="font-bold">ผู้โหวต:</span> {card.likedNames.map(n => n.name).join(', ')}
-                            </div>
-                          )}
-
-                          <div className="flex items-center justify-between mt-auto pt-3 border-t border-slate-100">
+                            <div className="flex items-center justify-between mt-auto pt-3 border-t border-slate-100">
                               <span className="text-[10px] text-slate-500 font-bold flex items-center gap-1.5 font-sans truncate pr-2">
-                                  <Users className="w-3 h-3 text-slate-400 flex-shrink-0" /> <span className="truncate">{card.author}</span> {card.childrenCount > 0 && <span className="text-slate-700 bg-slate-100 px-1.5 rounded border border-slate-200 flex-shrink-0">+ {card.childrenCount} รวมกัน</span>}
+                                <Users className="w-3 h-3 text-slate-400 flex-shrink-0" /> <span className="truncate">{card.author}</span> {card.childrenCount > 0 && <span className="text-slate-700 bg-slate-100 px-1.5 rounded border border-slate-200 flex-shrink-0">+ {card.childrenCount} รวมกัน</span>}
                               </span>
                               <div className="flex items-center gap-1.5 flex-shrink-0">
-                                  <button onClick={() => toggleLike(card)} title={card.likedNames?.map(n => n.name).join(', ')} className="p-1.5 text-slate-400 hover:text-emerald-600 transition-colors bg-slate-50 rounded-lg border border-slate-100 relative group">
-                                    <ThumbsUp className={`w-3.5 h-3.5 ${card.likedBy?.includes(user?.uid) ? 'fill-current text-emerald-500' : ''}`} />
+                                <button onClick={() => toggleLike(card)} title={card.likedNames?.map(n => n.name).join(', ')} className="p-1.5 text-slate-400 hover:text-emerald-600 transition-colors bg-slate-50 rounded-lg border border-slate-100 relative group">
+                                  <ThumbsUp className={`w-3.5 h-3.5 ${card.likedBy?.includes(user?.uid) ? 'fill-current text-emerald-500' : ''}`} />
+                                </button>
+                                {card.childrenCount > 0 && (
+                                  <button onClick={() => setSelectedCardId(card.id)} className="p-1.5 text-slate-400 hover:text-blue-600 transition-colors bg-slate-50 rounded-lg border border-slate-100">
+                                    <Info className="w-3.5 h-3.5" />
                                   </button>
-                                  {card.childrenCount > 0 && (
-                                    <button onClick={() => setSelectedCardId(card.id)} className="p-1.5 text-slate-400 hover:text-blue-600 transition-colors bg-slate-50 rounded-lg border border-slate-100">
-                                      <Info className="w-3.5 h-3.5" />
-                                    </button>
-                                  )}
-                                  {isAdmin && (
-                                    <button onClick={() => {if(window.confirm('ต้องการลบข้อเสนอนี้ใช่หรือไม่?')) deleteCard(card.id)}} className="p-2 text-slate-300 hover:text-red-500">
-                                      <X className="w-4 h-4" />
-                                    </button>
-                                  )}
+                                )}
+                                {isAdmin && (
+                                  <button onClick={() => { if (window.confirm('ต้องการลบข้อเสนอนี้ใช่หรือไม่?')) deleteCard(card.id) }} className="p-2 text-slate-300 hover:text-red-500">
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                )}
                               </div>
+                            </div>
                           </div>
-                        </div>
-                      )})}
+                        )
+                      })}
                     </div>
                   </div>
                 );
@@ -717,7 +861,7 @@ const App = () => {
                   {groups.map(group => {
                     const groupCards = displayCards.filter(c => c.groupId === group.id);
                     if (groupCards.length === 0) return null;
-                    
+
                     return (
                       <React.Fragment key={`print-group-${group.id}`}>
                         <tr className="bg-slate-200 break-after-avoid">
@@ -774,63 +918,38 @@ const App = () => {
       {/* Details Modal */}
       {selectedCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm print:hidden">
-            <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in duration-200">
-                <div className="p-5 border-b border-slate-200 flex justify-between items-center bg-slate-50 text-slate-800">
-                    <h3 className="font-black text-sm flex items-center gap-2 text-slate-900"><Merge className="w-4 h-4" /> หัวข้อที่ถูกรวมไว้ด้วยกัน</h3>
-                    <button onClick={() => setSelectedCardId(null)} className="text-slate-500 hover:text-slate-800 transition-colors"><X className="w-5 h-5" /></button>
-                </div>
-                <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
-                    <div className="bg-slate-100 p-5 rounded-2xl border border-slate-200 shadow-sm">
-                        <p className="text-slate-900 font-bold font-sans">{selectedCard.text}</p>
-                        <p className="text-xs text-slate-500 mt-3 font-bold font-sans">ต้นฉบับโดย: {selectedCard.author}</p>
-                    </div>
-                    {cards.filter(c => c.parentId === selectedCard.id).map(sub => (
-                        <div key={sub.id} className="p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
-                            <p className="text-sm text-slate-700 font-bold font-sans">{sub.text}</p>
-                            <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
-                                <span className="text-[10px] font-black text-slate-500 uppercase">บ้าน: {sub.author}</span>
-                                {isAdmin && (
-                                  <button onClick={() => unmergeCard(sub.id)} className="text-red-500 text-[10px] font-black hover:text-red-600 flex items-center gap-1 transition-colors bg-red-50 px-2 py-1 rounded">
-                                    <Link2Off className="w-3 h-3" /> แยกการ์ดนี้ออก
-                                  </button>
-                                )}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-                <div className="p-5 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
-                    <div className="text-slate-600 font-bold text-[10px] uppercase">รวมทั้งหมด: {selectedCard.totalAuthors} รายการ</div>
-                    <button onClick={() => setSelectedCardId(null)} className="px-6 py-2.5 bg-slate-900 border border-slate-800 text-white hover:bg-slate-800 rounded-xl font-bold text-xs transition-colors">ปิดหน้าต่าง</button>
-                </div>
+          <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in duration-200">
+            <div className="p-5 border-b border-slate-200 flex justify-between items-center bg-slate-50 text-slate-800">
+              <h3 className="font-black text-sm flex items-center gap-2 text-slate-900"><Merge className="w-4 h-4" /> หัวข้อที่ถูกรวมไว้ด้วยกัน</h3>
+              <button onClick={() => setSelectedCardId(null)} className="text-slate-500 hover:text-slate-800 transition-colors"><X className="w-5 h-5" /></button>
             </div>
+            <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+              <div className="bg-slate-100 p-5 rounded-2xl border border-slate-200 shadow-sm">
+                <p className="text-slate-900 font-bold font-sans">{selectedCard.text}</p>
+                <p className="text-xs text-slate-500 mt-3 font-bold font-sans">ต้นฉบับโดย: {selectedCard.author}</p>
+              </div>
+              {cards.filter(c => c.parentId === selectedCard.id).map(sub => (
+                <div key={sub.id} className="p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-sm text-slate-700 font-bold font-sans">{sub.text}</p>
+                  <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
+                    <span className="text-[10px] font-black text-slate-500 uppercase">บ้าน: {sub.author}</span>
+                    {isAdmin && (
+                      <button onClick={() => unmergeCard(sub.id)} className="text-red-500 text-[10px] font-black hover:text-red-600 flex items-center gap-1 transition-colors bg-red-50 px-2 py-1 rounded">
+                        <Link2Off className="w-3 h-3" /> แยกการ์ดนี้ออก
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="p-5 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <div className="text-slate-600 font-bold text-[10px] uppercase">รวมทั้งหมด: {selectedCard.totalAuthors} รายการ</div>
+              <button onClick={() => setSelectedCardId(null)} className="px-6 py-2.5 bg-slate-900 border border-slate-800 text-white hover:bg-slate-800 rounded-xl font-bold text-xs transition-colors">ปิดหน้าต่าง</button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Admin PIN Modal */}
-      {showPinModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm print:hidden">
-            <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in duration-200">
-                <div className="p-5 border-b border-slate-200 flex justify-between items-center bg-slate-900 text-white">
-                    <h3 className="font-black text-sm flex items-center gap-2"><Lock className="w-4 h-4" /> สิทธิ์ผู้ดูแลระบบ</h3>
-                    <button onClick={() => setShowPinModal(false)} className="text-slate-400 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
-                </div>
-                <form onSubmit={handlePinSubmit} className="p-7">
-                    <p className="text-sm font-bold text-slate-600 mb-6 text-center font-sans">กรุณาใส่รหัสผ่านเพื่อแก้ไขข้อมูล</p>
-                    <input 
-                      type="password" 
-                      value={pinInput}
-                      onChange={(e) => setPinInput(e.target.value)}
-                      className="w-full text-center tracking-[1em] font-black text-2xl py-4 rounded-2xl border-2 border-slate-300 focus:border-slate-900 transition-colors bg-slate-50 text-slate-900 shadow-sm mb-6 outline-none"
-                      autoFocus
-                      required
-                    />
-                    <button type="submit" className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-4 rounded-2xl shadow-md transition active:scale-95 text-sm font-sans border border-slate-800">
-                      ยืนยันรหัสผ่าน
-                    </button>
-                </form>
-            </div>
-        </div>
-      )}
     </div>
   );
 };
