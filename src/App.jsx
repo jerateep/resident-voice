@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   Plus, FolderPlus, MessageSquare,
   Users, ThumbsUp, Clock,
-  TrendingUp, X, Link2Off, Printer, Info, Merge, Share2, Lock, Unlock, Search, AlertTriangle
+  TrendingUp, X, Link2Off, Printer, Info, Merge, Share2, Lock, Unlock, Search, AlertTriangle,
+  Vote, ThumbsDown, MinusCircle, CheckCircle2, XCircle, CircleDot
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import FingerprintJS from '@fingerprintjs/fingerprintjs';
@@ -42,6 +43,11 @@ const App = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [duplicateWarning, setDuplicateWarning] = useState(null);
   const [showDuplicateWarning, setShowDuplicateWarning] = useState(false);
+
+  // --- Poll State ---
+  const [polls, setPolls] = useState([]);
+  const [newPollText, setNewPollText] = useState("");
+  const [votingPolls, setVotingPolls] = useState(new Set());
 
   // Initialize FingerprintJS
   useEffect(() => {
@@ -260,7 +266,13 @@ const App = () => {
       }
     });
 
-    return () => { unsubCards(); unsubGroups(); };
+    // Poll Sync
+    const pollsCol = collection(db, 'artifacts', currentBoardId, 'public', 'data', 'polls');
+    const unsubPolls = onSnapshot(pollsCol, (snapshot) => {
+      setPolls(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a, b) => b.createdAt - a.createdAt));
+    });
+
+    return () => { unsubCards(); unsubGroups(); unsubPolls(); };
   }, [user, currentBoardId]);
 
   // --- DRAG AND DROP ---
@@ -550,6 +562,66 @@ const App = () => {
     setShowNameModal(false);
   };
 
+  // --- Poll Functions ---
+  const addPoll = async (e) => {
+    e.preventDefault();
+    if (!newPollText.trim() || !user || !visitorId) return;
+    const currentBoard = boards.find(b => b.id === currentBoardId);
+    if (currentBoard?.status === 'closed') {
+      alert("ไม่สามารถสร้างมติได้: หัวข้อนี้ถูกปิดแล้ว");
+      return;
+    }
+    try {
+      const safeText = DOMPurify.sanitize(newPollText, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
+      const authorName = savedUserName || "ไม่ระบุ";
+      await addDoc(collection(db, 'artifacts', currentBoardId, 'public', 'data', 'polls'), {
+        text: safeText, author: authorName,
+        creatorId: user.uid, creatorDevice: visitorId,
+        agree: [], disagree: [], abstain: [],
+        createdAt: Date.now(), status: 'open'
+      });
+      setNewPollText("");
+    } catch (err) {
+      console.error("Error adding poll:", err);
+      alert("ไม่สามารถสร้างมติได้: " + err.message);
+    }
+  };
+
+  const votePoll = async (poll, choice) => {
+    if (!user || !visitorId || votingPolls.has(poll.id)) return;
+    const currentBoard = boards.find(b => b.id === currentBoardId);
+    if (currentBoard?.status === 'closed') {
+      alert("ไม่สามารถลงมติได้: หัวข้อนี้ถูกปิดแล้ว");
+      return;
+    }
+    setVotingPolls(prev => new Set(prev).add(poll.id));
+    try {
+      const voterName = savedUserName || "ไม่ระบุ";
+      const voterEntry = { uid: user.uid, name: voterName, deviceId: visitorId };
+      // Remove from all choices first
+      let newAgree = (poll.agree || []).filter(v => v.uid !== user.uid && v.deviceId !== visitorId);
+      let newDisagree = (poll.disagree || []).filter(v => v.uid !== user.uid && v.deviceId !== visitorId);
+      let newAbstain = (poll.abstain || []).filter(v => v.uid !== user.uid && v.deviceId !== visitorId);
+      // Check if user already voted this choice (toggle off)
+      const alreadyVoted = (poll[choice] || []).some(v => v.uid === user.uid || v.deviceId === visitorId);
+      if (!alreadyVoted) {
+        if (choice === 'agree') newAgree.push(voterEntry);
+        else if (choice === 'disagree') newDisagree.push(voterEntry);
+        else newAbstain.push(voterEntry);
+      }
+      await updateDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'polls', poll.id), {
+        agree: newAgree, disagree: newDisagree, abstain: newAbstain
+      });
+    } finally {
+      setVotingPolls(prev => { const n = new Set(prev); n.delete(poll.id); return n; });
+    }
+  };
+
+  const deletePoll = async (pollId) => {
+    if (!isAdmin) return;
+    await deleteDoc(doc(db, 'artifacts', currentBoardId, 'public', 'data', 'polls', pollId));
+  };
+
   if (!user || isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -589,8 +661,9 @@ const App = () => {
               <Printer className="w-4 h-4" /> <span className="hidden md:inline">พิมพ์รายงาน</span>
             </button>
             <div className="flex gap-1 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
-              <button onClick={() => setView('submit')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${view === 'submit' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}>ส่งข้อเสนอ</button>
-              <button onClick={() => setView('board')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${view === 'board' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}>ดูกระดาน</button>
+              <button onClick={() => setView('submit')} className={`px-3 md:px-4 py-2 rounded-lg text-xs md:text-sm font-bold transition-all ${view === 'submit' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}>ส่งข้อเสนอ</button>
+              <button onClick={() => setView('board')} className={`px-3 md:px-4 py-2 rounded-lg text-xs md:text-sm font-bold transition-all ${view === 'board' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}>ดูกระดาน</button>
+              <button onClick={() => setView('poll')} className={`px-3 md:px-4 py-2 rounded-lg text-xs md:text-sm font-bold transition-all flex items-center gap-1.5 ${view === 'poll' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}><Vote className="w-3.5 h-3.5" />ลงมติ</button>
             </div>
           </div>
         </div>
@@ -952,6 +1025,166 @@ const App = () => {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {view === 'poll' && (
+          <div className="space-y-6">
+            {/* Board Selector for Poll View */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm print:hidden">
+              <div className="flex items-center gap-3 text-slate-900 font-black uppercase text-sm pl-2">
+                <Vote className="w-5 h-5 text-slate-800" />
+                ลงมติ — หัวข้อ:
+              </div>
+              <div className="flex flex-wrap gap-3 w-full md:w-auto items-center">
+                <select
+                  className="flex-1 md:flex-none bg-slate-50 border border-slate-300 text-slate-900 text-sm rounded-xl py-2.5 px-4 font-bold outline-none focus:border-slate-500 transition-colors shadow-sm min-w-[200px]"
+                  value={currentBoardId}
+                  onChange={(e) => setCurrentBoardId(e.target.value)}
+                >
+                  {boards.map(b => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Create Poll Form */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+              <h3 className="font-black text-slate-900 text-sm uppercase mb-4 flex items-center gap-2">
+                <Plus className="w-4 h-4" /> สร้างมติใหม่
+              </h3>
+              <form onSubmit={addPoll} className="flex gap-3">
+                <input
+                  type="text"
+                  value={newPollText}
+                  onChange={(e) => setNewPollText(e.target.value)}
+                  maxLength={100}
+                  placeholder="พิมพ์หัวข้อมติ เช่น เห็นด้วยหรือไม่กับการซ่อมรั้ว..."
+                  required
+                  className="flex-1 px-4 py-3 rounded-xl border border-slate-300 bg-white text-slate-900 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 font-sans shadow-sm placeholder:text-slate-400 text-sm font-bold"
+                />
+                <button type="submit" className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-all shadow-md border border-slate-800 flex items-center gap-2 whitespace-nowrap">
+                  <Plus className="w-4 h-4" /> สร้างมติ
+                </button>
+              </form>
+              <p className="text-[10px] text-slate-400 mt-2 font-sans">{newPollText.length}/100 ตัวอักษร • โดย: {savedUserName || 'ไม่ระบุ'}</p>
+            </div>
+
+            {/* Poll Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {polls.map(poll => {
+                const agreeCount = (poll.agree || []).length;
+                const disagreeCount = (poll.disagree || []).length;
+                const abstainCount = (poll.abstain || []).length;
+                const totalVoters = agreeCount + disagreeCount + abstainCount;
+                const agreePercent = totalVoters > 0 ? Math.round((agreeCount / totalVoters) * 100) : 0;
+                const disagreePercent = totalVoters > 0 ? Math.round((disagreeCount / totalVoters) * 100) : 0;
+                const abstainPercent = totalVoters > 0 ? Math.round((abstainCount / totalVoters) * 100) : 0;
+                const userVote = (poll.agree || []).some(v => v.uid === user?.uid || v.deviceId === visitorId) ? 'agree'
+                  : (poll.disagree || []).some(v => v.uid === user?.uid || v.deviceId === visitorId) ? 'disagree'
+                  : (poll.abstain || []).some(v => v.uid === user?.uid || v.deviceId === visitorId) ? 'abstain'
+                  : null;
+                const isVoting = votingPolls.has(poll.id);
+                const boardClosed = boards.find(b => b.id === currentBoardId)?.status === 'closed';
+
+                return (
+                  <div key={poll.id} className="bg-white rounded-2xl border-2 border-slate-200 shadow-sm p-6 flex flex-col transition-all hover:border-slate-300">
+                    {/* Header */}
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <Vote className="w-5 h-5 text-slate-700 flex-shrink-0" />
+                        <span className="text-[10px] font-bold text-slate-400 uppercase">มติ</span>
+                      </div>
+                      {isAdmin && (
+                        <button onClick={() => { if (window.confirm('ต้องการลบมตินี้ใช่หรือไม่?')) deletePoll(poll.id) }} className="text-slate-300 hover:text-red-500 transition-colors">
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Question */}
+                    <p className="text-slate-800 font-bold leading-relaxed mb-1 text-base font-sans">{poll.text}</p>
+                    <p className="text-[10px] text-slate-400 font-bold mb-5">โดย: {poll.author}</p>
+
+                    {/* Results Bar Chart */}
+                    <div className="space-y-3 mb-5">
+                      {/* Agree */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-bold text-emerald-700 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> เห็นด้วย</span>
+                          <span className="text-xs font-black text-emerald-700">{agreeCount} ({agreePercent}%)</span>
+                        </div>
+                        <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
+                          <div className="h-full bg-emerald-500 rounded-full transition-all duration-500" style={{ width: `${agreePercent}%` }} />
+                        </div>
+                      </div>
+                      {/* Disagree */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-bold text-red-600 flex items-center gap-1"><XCircle className="w-3 h-3" /> ไม่เห็นด้วย</span>
+                          <span className="text-xs font-black text-red-600">{disagreeCount} ({disagreePercent}%)</span>
+                        </div>
+                        <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
+                          <div className="h-full bg-red-500 rounded-full transition-all duration-500" style={{ width: `${disagreePercent}%` }} />
+                        </div>
+                      </div>
+                      {/* Abstain */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-bold text-slate-500 flex items-center gap-1"><CircleDot className="w-3 h-3" /> งดออกเสียง</span>
+                          <span className="text-xs font-black text-slate-500">{abstainCount} ({abstainPercent}%)</span>
+                        </div>
+                        <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
+                          <div className="h-full bg-slate-400 rounded-full transition-all duration-500" style={{ width: `${abstainPercent}%` }} />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Voter count */}
+                    <p className="text-[10px] text-slate-400 font-bold mb-4 border-t border-slate-100 pt-3">ผู้ลงมติแล้ว: {totalVoters} คน</p>
+
+                    {/* Vote Buttons */}
+                    <div className="flex gap-2 mt-auto">
+                      <button
+                        onClick={() => votePoll(poll, 'agree')}
+                        disabled={isVoting || boardClosed}
+                        className={`flex-1 py-2.5 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 border-2 ${
+                          userVote === 'agree' ? 'bg-emerald-500 text-white border-emerald-500 shadow-md' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                        } ${(isVoting || boardClosed) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" /> เห็นด้วย
+                      </button>
+                      <button
+                        onClick={() => votePoll(poll, 'disagree')}
+                        disabled={isVoting || boardClosed}
+                        className={`flex-1 py-2.5 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 border-2 ${
+                          userVote === 'disagree' ? 'bg-red-500 text-white border-red-500 shadow-md' : 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
+                        } ${(isVoting || boardClosed) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        <XCircle className="w-3.5 h-3.5" /> ไม่เห็นด้วย
+                      </button>
+                      <button
+                        onClick={() => votePoll(poll, 'abstain')}
+                        disabled={isVoting || boardClosed}
+                        className={`flex-1 py-2.5 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 border-2 ${
+                          userVote === 'abstain' ? 'bg-slate-500 text-white border-slate-500 shadow-md' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                        } ${(isVoting || boardClosed) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        <CircleDot className="w-3.5 h-3.5" /> งดออกเสียง
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {polls.length === 0 && (
+                <div className="col-span-full text-center py-16 text-slate-400 font-bold">
+                  <Vote className="w-10 h-10 mx-auto mb-3 text-slate-300" />
+                  <p>ยังไม่มีมติในหัวข้อนี้</p>
+                  <p className="text-xs mt-1">สร้างมติใหม่โดยกรอกหัวข้อด้านบน</p>
+                </div>
+              )}
             </div>
           </div>
         )}
