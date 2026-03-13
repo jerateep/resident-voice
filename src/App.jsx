@@ -740,8 +740,8 @@ const App = () => {
               <div>
                 <label className="text-sm font-bold text-slate-700 block mb-2 font-sans">ชื่อ หรือ บ้านเลขที่ <span className="text-red-500">*</span></label>
                 <div className="flex gap-2 items-center">
-                  <input type="text" value={newAuthor} readOnly className="flex-1 px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 text-slate-900 outline-none font-sans shadow-sm font-bold cursor-default" />
-                  <button type="button" onClick={() => { setNameModalInput(savedUserName); setShowNameModal(true); }} className="px-4 py-3 bg-white border border-slate-300 text-slate-700 rounded-2xl text-xs font-bold hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">
+                  <input type="text" value={newAuthor} readOnly className="flex-1 min-w-0 px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 text-slate-900 outline-none font-sans shadow-sm font-bold cursor-default truncate" />
+                  <button type="button" onClick={() => { setNameModalInput(savedUserName); setShowNameModal(true); }} className="flex-shrink-0 px-3 py-3 bg-white border border-slate-300 text-slate-700 rounded-2xl text-xs font-bold hover:bg-slate-50 transition-colors shadow-sm">
                     แก้ไข
                   </button>
                 </div>
