@@ -24,6 +24,7 @@ const App = () => {
   });
   const [newBoardName, setNewBoardName] = useState("");
   const [newMaxVotes, setNewMaxVotes] = useState(10);
+  const [newMaxCardsPerUser, setNewMaxCardsPerUser] = useState(3);
   const [editingMaxVotes, setEditingMaxVotes] = useState(null);
 
   // --- Existing State ---
@@ -61,6 +62,12 @@ const App = () => {
     return localStorage.getItem('resident_voice_user_name') || "";
   });
   const [newAuthor, setNewAuthor] = useState(savedUserName);
+  const [showNameModal, setShowNameModal] = useState(() => {
+    return !localStorage.getItem('resident_voice_user_name');
+  });
+  const [nameModalInput, setNameModalInput] = useState(() => {
+    return localStorage.getItem('resident_voice_user_name') || "";
+  });
   const [newGroupName, setNewGroupName] = useState("");
   const [view, setView] = useState("board");
   const [sortBy, setSortBy] = useState("votes"); // 'votes' or 'newest'
@@ -380,13 +387,22 @@ const App = () => {
       let newLikedNames = [...likedNames];
       let newLikedDevices = [...likedDevices];
 
-      // Check limit: allow unliking, but prevent liking if votes are limit or more
-      if (!hasLiked && currentVotes >= limit) {
+      // Check limit using totalVotes (parent + children) for consistency with display
+      const children = cards.filter(c => c.parentId === card.id);
+      const totalVotes = (currentVotes) + children.reduce((sum, c) => sum + (c.votes || 0), 0);
+
+      if (!hasLiked && totalVotes >= limit) {
         alert(`ไม่สามารถโหวตได้: ข้อเสนอนี้ได้รับโหวตเต็มจำนวนแล้ว (สูงสุด ${limit} โหวต)`);
         return;
       }
 
       if (hasLiked) {
+        // Prevent the card creator from unliking their own card
+        const isCreator = card.creatorId === user.uid || card.creatorDevice === visitorId;
+        if (isCreator) {
+          alert("ไม่สามารถยกเลิกโหวตได้: คุณเป็นผู้เสนอการ์ดนี้");
+          return;
+        }
         // Unlike
         newLikedBy = likedBy.filter(id => id !== user.uid);
         newLikedNames = likedNames.filter(item => item.uid !== user.uid);
@@ -464,9 +480,10 @@ const App = () => {
     if (!isAdmin || !newBoardName.trim()) return;
     try {
       const bid = `board_${Date.now()}`;
-      await setDoc(doc(db, 'boards', bid), { id: bid, name: newBoardName, maxVotes: newMaxVotes, status: 'open', createdAt: Date.now() });
+      await setDoc(doc(db, 'boards', bid), { id: bid, name: newBoardName, maxVotes: newMaxVotes, maxCardsPerUser: newMaxCardsPerUser, status: 'open', createdAt: Date.now() });
       setNewBoardName("");
       setNewMaxVotes(10);
+      setNewMaxCardsPerUser(3);
       setCurrentBoardId(bid);
     } catch (err) {
       console.error("Error adding board:", err);
@@ -520,7 +537,18 @@ const App = () => {
       enriched.sort((a, b) => b.createdAt - a.createdAt);
     }
     return enriched;
-  }, [cards, sortBy]);
+  }, [cards, sortBy, searchQuery]);
+
+  const handleSaveNameModal = (e) => {
+    e.preventDefault();
+    const name = nameModalInput.trim();
+    if (!name) return;
+    const safeName = name.length > 15 ? name.substring(0, 15) : name;
+    localStorage.setItem('resident_voice_user_name', safeName);
+    setSavedUserName(safeName);
+    setNewAuthor(safeName);
+    setShowNameModal(false);
+  };
 
   if (!user || isLoading) {
     return (
@@ -549,16 +577,16 @@ const App = () => {
             <button
               onClick={isAdmin ? handleAdminSignOut : handleAdminSignIn}
               title={isAdmin ? `เข้าสู่ระบบโดย: ${adminUser?.email || ''}` : ''}
-              className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm border ${isAdmin ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm border ${isAdmin ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}
             >
               {isAdmin ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-              {isAdmin ? 'สิทธิ์ผู้ดูแลระบบ: เปิดใช้งาน' : 'เข้าสู่ระบบด้วย Google'}
+              <span className="hidden md:inline">{isAdmin ? 'สิทธิ์ผู้ดูแลระบบ: เปิดใช้งาน' : 'เข้าสู่ระบบด้วย Google'}</span>
             </button>
             <button
               onClick={() => window.print()}
-              className="hidden md:flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shadow-md"
+              className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shadow-md"
             >
-              <Printer className="w-4 h-4" /> พิมพ์รายงาน
+              <Printer className="w-4 h-4" /> <span className="hidden md:inline">พิมพ์รายงาน</span>
             </button>
             <div className="flex gap-1 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
               <button onClick={() => setView('submit')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${view === 'submit' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}>ส่งข้อเสนอ</button>
@@ -594,7 +622,7 @@ const App = () => {
                     value={currentBoardId}
                     onChange={(e) => setCurrentBoardId(e.target.value)}
                   >
-                    {boards.map(b => (
+                    {boards.filter(b => b.status !== 'closed').map(b => (
                       <option key={b.id} value={b.id} className="bg-white text-slate-900">{b.name}</option>
                     ))}
                   </select>
@@ -606,7 +634,8 @@ const App = () => {
 
               <div>
                 <label className="text-sm font-bold text-slate-700 block mb-2 font-sans">ข้อความที่ต้องการเสนอ</label>
-                <textarea value={newCardText} onChange={handleTextChange} className="w-full px-4 py-4 rounded-2xl border border-slate-300 bg-white text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 outline-none h-32 resize-none text-base font-sans shadow-sm placeholder:text-slate-400" placeholder="พิมพ์ข้อความที่ต้องการเสนอที่นี่..." required />
+                <textarea value={newCardText} onChange={handleTextChange} maxLength={100} className="w-full px-4 py-4 rounded-2xl border border-slate-300 bg-white text-slate-900 focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 outline-none h-32 resize-none text-base font-sans shadow-sm placeholder:text-slate-400" placeholder="พิมพ์ข้อความที่ต้องการเสนอที่นี่..." required />
+                <p className="text-[10px] text-slate-400 mt-1.5 font-sans text-right">{newCardText.length}/100 ตัวอักษร</p>
               
                 {/* Duplicate Warning */}
                 {showDuplicateWarning && duplicateWarning && (
@@ -614,7 +643,7 @@ const App = () => {
                     <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
                     <div>
                       <h4 className="text-sm font-bold text-amber-800">มีข้อเสนอที่คล้ายกันอยู่แล้ว</h4>
-                      <p className="text-xs text-amber-700 mt-1 line-clamp-2">"{duplicateWarning.text}" (โดย {duplicateWarning.author})</p>
+                      <p className="text-xs text-amber-700 mt-1 line-clamp-2">"{duplicateWarning.text?.length > 80 ? duplicateWarning.text.substring(0, 80) + '...' : duplicateWarning.text}" (โดย {duplicateWarning.author})</p>
                       <button type="button" onClick={() => setView('board')} className="text-xs font-black text-amber-700 hover:text-amber-900 mt-2 underline">
                         ไปที่กระดานเพื่อโหวตแทน
                       </button>
@@ -624,8 +653,12 @@ const App = () => {
               </div>
               <div>
                 <label className="text-sm font-bold text-slate-700 block mb-2 font-sans">ชื่อ หรือ บ้านเลขที่ <span className="text-red-500">*</span></label>
-                <input type="text" value={newAuthor} maxLength={15} onChange={(e) => setNewAuthor(e.target.value)} placeholder="เช่น บ้าน 12/3 (บังคับกรอก)" required className="w-full px-4 py-3 rounded-2xl border border-slate-300 bg-white text-slate-900 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 font-sans shadow-sm placeholder:text-slate-400" />
-                <p className="text-[10px] text-slate-400 mt-1.5 font-sans">* ใส่ได้สูงสุด 15 ตัวอักษร</p>
+                <div className="flex gap-2 items-center">
+                  <input type="text" value={newAuthor} readOnly className="flex-1 px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 text-slate-900 outline-none font-sans shadow-sm font-bold cursor-default" />
+                  <button type="button" onClick={() => { setNameModalInput(savedUserName); setShowNameModal(true); }} className="px-4 py-3 bg-white border border-slate-300 text-slate-700 rounded-2xl text-xs font-bold hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">
+                    แก้ไข
+                  </button>
+                </div>
               </div>
               <button type="submit" className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-4 rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 font-sans mt-8 text-lg border border-slate-800">
                 <Plus className="w-5 h-5" /> สร้างการ์ด
@@ -738,6 +771,10 @@ const App = () => {
                       <div className="relative flex items-center gap-1">
                         <span className="text-xs font-bold text-slate-600">จำกัดโหวต:</span>
                         <input type="number" min="1" value={newMaxVotes} onChange={(e) => setNewMaxVotes(Number(e.target.value))} className="w-14 pl-2 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none font-bold focus:border-slate-500 text-center" />
+                      </div>
+                      <div className="relative flex items-center gap-1">
+                        <span className="text-xs font-bold text-slate-600">โควต้า/เครื่อง:</span>
+                        <input type="number" min="1" value={newMaxCardsPerUser} onChange={(e) => setNewMaxCardsPerUser(Number(e.target.value))} className="w-14 pl-2 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none font-bold focus:border-slate-500 text-center" />
                         <button onClick={addBoard} className="ml-1 bg-slate-900 text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors"><Plus className="w-4 h-4" /></button>
                       </div>
                     </div>
@@ -821,7 +858,12 @@ const App = () => {
                                 <Users className="w-3 h-3 text-slate-400 flex-shrink-0" /> <span className="truncate">{card.author}</span> {card.childrenCount > 0 && <span className="text-slate-700 bg-slate-100 px-1.5 rounded border border-slate-200 flex-shrink-0">+ {card.childrenCount} รวมกัน</span>}
                               </span>
                               <div className="flex items-center gap-1.5 flex-shrink-0">
-                                <button onClick={() => toggleLike(card)} title={card.likedNames?.map(n => n.name).join(', ')} className="p-1.5 text-slate-400 hover:text-emerald-600 transition-colors bg-slate-50 rounded-lg border border-slate-100 relative group">
+                                <button
+                                  onClick={() => toggleLike(card)}
+                                  disabled={votingCards.has(card.id)}
+                                  title={card.likedNames?.map(n => n.name).join(', ')}
+                                  className={`p-1.5 transition-colors bg-slate-50 rounded-lg border border-slate-100 relative group ${votingCards.has(card.id) ? 'opacity-50 cursor-not-allowed text-slate-300' : 'text-slate-400 hover:text-emerald-600'}`}
+                                >
                                   <ThumbsUp className={`w-3.5 h-3.5 ${card.likedBy?.includes(user?.uid) ? 'fill-current text-emerald-500' : ''}`} />
                                 </button>
                                 {card.childrenCount > 0 && (
@@ -946,6 +988,40 @@ const App = () => {
               <div className="text-slate-600 font-bold text-[10px] uppercase">รวมทั้งหมด: {selectedCard.totalAuthors} รายการ</div>
               <button onClick={() => setSelectedCardId(null)} className="px-6 py-2.5 bg-slate-900 border border-slate-800 text-white hover:bg-slate-800 rounded-xl font-bold text-xs transition-colors">ปิดหน้าต่าง</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Welcome Name Modal */}
+      {showNameModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm print:hidden">
+          <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in duration-200">
+            <div className="p-6 border-b border-slate-200 bg-slate-50 text-center">
+              <div className="bg-slate-900 p-3 rounded-2xl shadow-sm inline-block mb-3">
+                <MessageSquare className="text-white w-6 h-6" />
+              </div>
+              <h2 className="text-xl font-black text-slate-900">ยินดีต้อนรับ!</h2>
+              <p className="text-xs text-slate-500 mt-1 font-bold">กรุณาระบุชื่อ หรือ บ้านเลขที่ ก่อนเริ่มใช้งาน</p>
+            </div>
+            <form onSubmit={handleSaveNameModal} className="p-6 space-y-5">
+              <div>
+                <label className="text-sm font-bold text-slate-700 block mb-2 font-sans">ชื่อ หรือ บ้านเลขที่ <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  value={nameModalInput}
+                  maxLength={15}
+                  onChange={(e) => setNameModalInput(e.target.value)}
+                  placeholder="เช่น บ้าน 12/3"
+                  required
+                  autoFocus
+                  className="w-full px-4 py-3 rounded-2xl border border-slate-300 bg-white text-slate-900 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 font-sans shadow-sm placeholder:text-slate-400 text-center text-lg font-bold"
+                />
+                <p className="text-[10px] text-slate-400 mt-1.5 font-sans text-center">* ใส่ได้สูงสุด 15 ตัวอักษร (แก้ไขได้ภายหลัง)</p>
+              </div>
+              <button type="submit" className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-3.5 rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 font-sans text-base border border-slate-800">
+                เริ่มใช้งาน
+              </button>
+            </form>
           </div>
         </div>
       )}
