@@ -633,37 +633,50 @@ const App = () => {
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 print:bg-white print:text-black">
       {/* Navbar (Hidden on Print) */}
-      <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 px-4 py-3 shadow-sm print:hidden">
-        <div className="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-4">
-          <div className="flex items-center gap-3">
-            <div className="bg-slate-900 p-2.5 rounded-xl shadow-sm">
-              <MessageSquare className="text-white w-5 h-5" />
+      <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 px-3 md:px-4 py-2.5 md:py-3 shadow-sm print:hidden">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:justify-between md:items-center gap-2 md:gap-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="bg-slate-900 p-2 md:p-2.5 rounded-xl shadow-sm">
+                <MessageSquare className="text-white w-4 h-4 md:w-5 md:h-5" />
+              </div>
+              <div>
+                <h1 className="text-lg md:text-xl font-black text-slate-900 leading-none">Resident <span className="text-slate-500">Voice</span></h1>
+                <p className="text-[9px] md:text-[10px] text-slate-400 mt-0.5 font-bold tracking-wide">กระดานรับฟังความคิดเห็นลูกบ้าน</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-black text-slate-900 leading-none">Resident <span className="text-slate-500">Voice</span></h1>
-              <p className="text-[10px] text-slate-400 mt-1 font-bold tracking-wide">กระดานรับฟังความคิดเห็นลูกบ้าน</p>
+            <div className="flex items-center gap-1.5 md:hidden">
+              <button
+                onClick={isAdmin ? handleAdminSignOut : handleAdminSignIn}
+                className={`p-2 rounded-lg text-xs border ${isAdmin ? 'bg-red-50 text-red-600 border-red-200' : 'bg-white text-slate-700 border-slate-200'}`}
+              >
+                {isAdmin ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+              </button>
+              <button onClick={() => window.print()} className="p-2 bg-slate-900 text-white rounded-lg">
+                <Printer className="w-4 h-4" />
+              </button>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 md:gap-4">
             <button
               onClick={isAdmin ? handleAdminSignOut : handleAdminSignIn}
               title={isAdmin ? `เข้าสู่ระบบโดย: ${adminUser?.email || ''}` : ''}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm border ${isAdmin ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}
+              className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm border ${isAdmin ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}
             >
               {isAdmin ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-              <span className="hidden md:inline">{isAdmin ? 'สิทธิ์ผู้ดูแลระบบ: เปิดใช้งาน' : 'เข้าสู่ระบบด้วย Google'}</span>
+              <span>{isAdmin ? 'สิทธิ์ผู้ดูแลระบบ: เปิดใช้งาน' : 'เข้าสู่ระบบด้วย Google'}</span>
             </button>
             <button
               onClick={() => window.print()}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shadow-md"
+              className="hidden md:flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shadow-md"
             >
-              <Printer className="w-4 h-4" /> <span className="hidden md:inline">พิมพ์รายงาน</span>
+              <Printer className="w-4 h-4" /> พิมพ์รายงาน
             </button>
-            <div className="flex gap-1 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
-              <button onClick={() => setView('submit')} className={`px-3 md:px-4 py-2 rounded-lg text-xs md:text-sm font-bold transition-all ${view === 'submit' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}>ส่งข้อเสนอ</button>
-              <button onClick={() => setView('board')} className={`px-3 md:px-4 py-2 rounded-lg text-xs md:text-sm font-bold transition-all ${view === 'board' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}>ดูกระดาน</button>
-              <button onClick={() => setView('poll')} className={`px-3 md:px-4 py-2 rounded-lg text-xs md:text-sm font-bold transition-all flex items-center gap-1.5 ${view === 'poll' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}><Vote className="w-3.5 h-3.5" />ลงมติ</button>
+            <div className="flex gap-1 bg-slate-100 p-1 md:p-1.5 rounded-xl border border-slate-200 w-full md:w-auto">
+              <button onClick={() => setView('submit')} className={`flex-1 md:flex-none px-2.5 md:px-4 py-1.5 md:py-2 rounded-lg text-[11px] md:text-sm font-bold transition-all ${view === 'submit' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}>ส่งข้อเสนอ</button>
+              <button onClick={() => setView('board')} className={`flex-1 md:flex-none px-2.5 md:px-4 py-1.5 md:py-2 rounded-lg text-[11px] md:text-sm font-bold transition-all ${view === 'board' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}>ดูกระดาน</button>
+              <button onClick={() => setView('poll')} className={`flex-1 md:flex-none px-2.5 md:px-4 py-1.5 md:py-2 rounded-lg text-[11px] md:text-sm font-bold transition-all flex items-center justify-center gap-1 ${view === 'poll' ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-900'}`}><Vote className="w-3 md:w-3.5 h-3 md:h-3.5" />ลงมติ</button>
             </div>
           </div>
         </div>
@@ -815,8 +828,8 @@ const App = () => {
                   </div>
                 )}
 
-                <button onClick={copyShareLink} className="px-5 py-2.5 bg-slate-900 border border-slate-800 text-white rounded-xl flex items-center justify-center gap-2 font-bold text-xs shadow-md hover:bg-slate-800 transition" title="คัดลอกลิงก์">
-                  <Share2 className="w-4 h-4" /> แชร์ลิงก์
+                <button onClick={copyShareLink} className="px-4 md:px-5 py-2.5 bg-slate-900 border border-slate-800 text-white rounded-xl flex items-center justify-center gap-2 font-bold text-xs shadow-md hover:bg-slate-800 transition whitespace-nowrap" title="คัดลอกลิงก์">
+                  <Share2 className="w-4 h-4" /> <span className="hidden md:inline">แชร์ลิงก์</span>
                 </button>
               </div>
             </div>
@@ -834,27 +847,26 @@ const App = () => {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2 md:gap-3">
                 {isAdmin && (
                   <>
-                    <div className="flex gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-300">
+                    <div className="flex flex-wrap gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-300">
                       <div className="relative">
-                        <input type="text" value={newBoardName} onChange={(e) => setNewBoardName(e.target.value)} placeholder="เริ่มหัวข้อใหม่..." className="pl-3 pr-8 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none w-32 font-bold placeholder:text-slate-400 focus:border-slate-500" onKeyPress={(e) => e.key === 'Enter' && addBoard()} />
+                        <input type="text" value={newBoardName} onChange={(e) => setNewBoardName(e.target.value)} placeholder="เริ่มหัวข้อใหม่..." className="pl-3 pr-2 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none w-28 md:w-32 font-bold placeholder:text-slate-400 focus:border-slate-500" onKeyPress={(e) => e.key === 'Enter' && addBoard()} />
                       </div>
                       <div className="relative flex items-center gap-1">
-                        <span className="text-xs font-bold text-slate-600">จำกัดโหวต:</span>
-                        <input type="number" min="1" value={newMaxVotes} onChange={(e) => setNewMaxVotes(Number(e.target.value))} className="w-14 pl-2 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none font-bold focus:border-slate-500 text-center" />
+                        <span className="text-[10px] md:text-xs font-bold text-slate-600">โหวต:</span>
+                        <input type="number" min="1" value={newMaxVotes} onChange={(e) => setNewMaxVotes(Number(e.target.value))} className="w-12 md:w-14 pl-1 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none font-bold focus:border-slate-500 text-center" />
                       </div>
                       <div className="relative flex items-center gap-1">
-                        <span className="text-xs font-bold text-slate-600">โควต้า/เครื่อง:</span>
-                        <input type="number" min="1" value={newMaxCardsPerUser} onChange={(e) => setNewMaxCardsPerUser(Number(e.target.value))} className="w-14 pl-2 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none font-bold focus:border-slate-500 text-center" />
+                        <span className="text-[10px] md:text-xs font-bold text-slate-600">โควต้า:</span>
+                        <input type="number" min="1" value={newMaxCardsPerUser} onChange={(e) => setNewMaxCardsPerUser(Number(e.target.value))} className="w-12 md:w-14 pl-1 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none font-bold focus:border-slate-500 text-center" />
                         <button onClick={addBoard} className="ml-1 bg-slate-900 text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors"><Plus className="w-4 h-4" /></button>
                       </div>
                     </div>
 
-                    <div className="w-[1px] h-8 bg-slate-200 hidden sm:block"></div>
                     <div className="relative bg-slate-50 p-1.5 rounded-xl border border-slate-300 flex">
-                      <input type="text" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="เพิ่มกลุ่มใหม่..." className="pl-3 pr-8 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none w-32 font-bold placeholder:text-slate-400 focus:border-slate-500 transition-colors" onKeyPress={(e) => e.key === 'Enter' && addGroup()} />
+                      <input type="text" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="เพิ่มกลุ่มใหม่..." className="pl-3 pr-2 py-2 bg-white border border-slate-200 text-slate-900 rounded-lg text-xs outline-none w-28 md:w-32 font-bold placeholder:text-slate-400 focus:border-slate-500 transition-colors" onKeyPress={(e) => e.key === 'Enter' && addGroup()} />
                       <button onClick={addGroup} className="ml-2 bg-slate-900 text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors"><FolderPlus className="w-4 h-4" /></button>
                     </div>
                   </>
@@ -1055,7 +1067,7 @@ const App = () => {
               <h3 className="font-black text-slate-900 text-sm uppercase mb-4 flex items-center gap-2">
                 <Plus className="w-4 h-4" /> สร้างมติใหม่
               </h3>
-              <form onSubmit={addPoll} className="flex gap-3">
+              <form onSubmit={addPoll} className="flex flex-col md:flex-row gap-3">
                 <input
                   type="text"
                   value={newPollText}
@@ -1065,7 +1077,7 @@ const App = () => {
                   required
                   className="flex-1 px-4 py-3 rounded-xl border border-slate-300 bg-white text-slate-900 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-900/10 font-sans shadow-sm placeholder:text-slate-400 text-sm font-bold"
                 />
-                <button type="submit" className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-all shadow-md border border-slate-800 flex items-center gap-2 whitespace-nowrap">
+                <button type="submit" className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-all shadow-md border border-slate-800 flex items-center justify-center gap-2 whitespace-nowrap">
                   <Plus className="w-4 h-4" /> สร้างมติ
                 </button>
               </form>
@@ -1146,7 +1158,7 @@ const App = () => {
                     <p className="text-[10px] text-slate-400 font-bold mb-4 border-t border-slate-100 pt-3">ผู้ลงมติแล้ว: {totalVoters} คน</p>
 
                     {/* Vote Buttons */}
-                    <div className="flex gap-2 mt-auto">
+                    <div className="flex flex-col sm:flex-row gap-2 mt-auto">
                       <button
                         onClick={() => votePoll(poll, 'agree')}
                         disabled={isVoting || boardClosed}
